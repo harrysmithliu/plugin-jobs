@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "JD Keyword Analyzer",
+  "version": "0.1.0",
+  "description": "Analyze Indeed and LinkedIn job descriptions with lightweight keyword scoring.",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "storage"
+  ],
+  "action": {
+    "default_title": "JD Keyword Analyzer",
+    "default_popup": "popup.html"
+  }
+}

@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>JD Keyword Analyzer</title>
+    <link rel="stylesheet" href="./popup.css" />
+  </head>
+  <body>
+    <main class="app">
+      <header class="header">
+        <h1>JD Keyword Analyzer</h1>
+        <p class="subtle">Launch a draggable analyzer inside the current job page</p>
+      </header>
+
+      <section class="controls">
+        <button id="launchButton" class="primary-button">Open Floating Analyzer</button>
+      </section>
+
+      <section class="status-block">
+        <p id="status" class="status">Open an Indeed or LinkedIn job page to launch the analyzer.</p>
+      </section>
+    </main>
+
+    <script type="module" src="./popup.js"></script>
+  </body>
+</html>
