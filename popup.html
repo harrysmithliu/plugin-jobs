@@ -20,6 +20,23 @@
       <section class="status-block">
         <p id="status" class="status">Open an Indeed or LinkedIn job page to launch the analyzer.</p>
       </section>
+
+      <section class="cache-section">
+        <div class="cache-header">
+          <div>
+            <h2>Recent Cached JDs</h2>
+            <p class="subtle cache-subtle">Read the last 5 Extracted JD entries saved in local cache</p>
+          </div>
+          <div class="cache-actions">
+            <button id="refreshCacheButton" class="secondary-button">Refresh</button>
+            <button id="copyCacheButton" class="secondary-button">Copy JSON</button>
+            <button id="downloadCacheButton" class="secondary-button">Download JSON</button>
+          </div>
+        </div>
+
+        <div id="cacheEmptyState" class="cache-empty" hidden>No cached JD entries yet.</div>
+        <div id="cacheList" class="cache-list"></div>
+      </section>
     </main>
 
     <script type="module" src="./popup.js"></script>

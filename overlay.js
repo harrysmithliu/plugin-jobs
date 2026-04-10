@@ -1,5 +1,24 @@
 (() => {
   const ROOT_ID = "jd-keyword-analyzer-overlay-root";
+  let setStatusSafely = null;
+
+  window.addEventListener("error", (event) => {
+    if (!isExtensionContextInvalidated(event?.error || event?.message)) {
+      return;
+    }
+
+    event.preventDefault();
+    notifyInvalidatedContext();
+  });
+
+  window.addEventListener("unhandledrejection", (event) => {
+    if (!isExtensionContextInvalidated(event?.reason)) {
+      return;
+    }
+
+    event.preventDefault();
+    notifyInvalidatedContext();
+  });
 
   const KEYWORD_DISPLAY_ORDER = [
     "Java",
@@ -203,14 +222,13 @@
     "must have",
     "must be proficient",
     "must be comfortable with",
-    "core requirement",
-    "required skills",
-    "required qualifications",
-    "requirements",
-    "strong experience",
-    "必须",
-    "必须有",
-    "精通"
+      "core requirement",
+      "required skills",
+      "required qualifications",
+      "requirements",
+      "必须",
+      "必须有",
+      "精通"
   ];
 
   const STRONG_HINTS = [
@@ -224,8 +242,9 @@
     "proficient in",
     "experience with",
     "experience in",
-    "strong knowledge of",
-    "strong development experience",
+      "strong knowledge of",
+      "strong experience",
+      "strong development experience",
     "tech you should be comfortable with",
     "comfortable with",
     "what we're looking for",
@@ -685,6 +704,11 @@
       renderResult(cacheEntry, false);
       await saveCachedAnalysis(cacheEntry);
     } catch (error) {
+      if (isExtensionContextInvalidated(error)) {
+        setStatus("This floating window belongs to an older extension version. Close it and reopen the analyzer.", true);
+        return;
+      }
+
       const cached = await getCachedAnalysis(window.location.href);
 
       if (cached) {
@@ -801,6 +825,8 @@
     statusElement.textContent = message;
     statusElement.style.color = isError ? "#b91c1c" : "#1f2933";
   }
+
+  setStatusSafely = setStatus;
 
   function startDrag(event) {
     if (window.innerWidth <= 720) {
@@ -930,19 +956,44 @@
   }
 
   async function saveCachedAnalysis(entry) {
-    const stored = await chrome.storage.local.get({ analysisCacheByUrl: {} });
-    const analysisCacheByUrl = stored.analysisCacheByUrl || {};
-    analysisCacheByUrl[entry.url] = entry;
+    try {
+      const stored = await chrome.storage.local.get({ analysisCacheByUrl: {} });
+      const analysisCacheByUrl = stored.analysisCacheByUrl || {};
+      analysisCacheByUrl[entry.url] = entry;
 
-    await chrome.storage.local.set({
-      analysisCacheByUrl,
-      lastAnalysis: entry
-    });
+      await chrome.storage.local.set({
+        analysisCacheByUrl,
+        lastAnalysis: entry
+      });
+    } catch (error) {
+      if (!isExtensionContextInvalidated(error)) {
+        throw error;
+      }
+    }
   }
 
   async function getCachedAnalysis(url) {
-    const stored = await chrome.storage.local.get({ analysisCacheByUrl: {} });
-    return stored.analysisCacheByUrl?.[url] || null;
+    try {
+      const stored = await chrome.storage.local.get({ analysisCacheByUrl: {} });
+      return stored.analysisCacheByUrl?.[url] || null;
+    } catch (error) {
+      if (isExtensionContextInvalidated(error)) {
+        return null;
+      }
+
+      throw error;
+    }
+  }
+
+  function isExtensionContextInvalidated(error) {
+    const message = String(error?.message || error || "");
+    return message.toLowerCase().includes("extension context invalidated");
+  }
+
+  function notifyInvalidatedContext() {
+    if (typeof setStatusSafely === "function") {
+      setStatusSafely("This floating window belongs to an older extension version. Close it and reopen the analyzer.", true);
+    }
   }
 
   function formatDateTime(isoString) {
@@ -1433,12 +1484,12 @@
 
   function analyzeJobText(jobText) {
     const normalizedText = normalizeText(jobText);
-    const sentences = splitIntoSentences(normalizedText);
+    const sentenceRecords = buildSentenceRecords(normalizedText);
     const results = [];
 
     for (const group of KEYWORD_GROUPS) {
       for (const item of group.items) {
-        const matches = collectMatches(item.aliases, sentences);
+        const matches = collectMatches(item, sentenceRecords);
 
         if (matches.length === 0) {
           results.push(buildEmptyResult(group.group, item.name));
@@ -1482,33 +1533,49 @@
     };
   }
 
-  function collectMatches(aliases, sentences) {
+  function collectMatches(item, sentenceRecords) {
     const matches = [];
+    const aliases = item.aliases;
 
-    for (const sentence of sentences) {
-      const lowerSentence = sentence.toLowerCase();
-      const matchedAlias = aliases.find((alias) => containsAlias(lowerSentence, alias));
+    for (let index = 0; index < sentenceRecords.length; index += 1) {
+      const sentenceRecord = sentenceRecords[index];
+      const { text: sentence, lower: lowerSentence } = sentenceRecord;
+      const matchedAlias = findMatchedAlias(item, lowerSentence);
 
       if (!matchedAlias) {
         continue;
       }
 
-      const years = parseYears(sentence);
-      const isRequired = REQUIRED_HINTS.some((hint) => lowerSentence.includes(hint));
-      const isStrong = STRONG_HINTS.some((hint) => lowerSentence.includes(hint));
-      const isPreferred = PREFERRED_HINTS.some((hint) => lowerSentence.includes(hint));
+      const contextRecords = collectContextRecords(sentenceRecords, index);
+      const directYears = parseYears(sentence);
+      const contextualYears = directYears ?? parseYearsFromContext(contextRecords, sentenceRecord);
+      const isRequired = hasHint(lowerSentence, REQUIRED_HINTS) || hasContextualHint(contextRecords, sentenceRecord, REQUIRED_HINTS);
+      const isStrong = hasHint(lowerSentence, STRONG_HINTS) || hasContextualHint(contextRecords, sentenceRecord, STRONG_HINTS);
+      const isPreferred =
+        hasHint(lowerSentence, PREFERRED_HINTS) || hasContextualHint(contextRecords, sentenceRecord, PREFERRED_HINTS);
 
       matches.push({
         alias: matchedAlias,
         sentence,
-        years,
+        years: contextualYears,
+        yearsSource: directYears !== null ? "direct" : contextualYears !== null ? "context" : null,
         isRequired,
         isStrong,
-        isPreferred
+        isPreferred,
+        looksTechnical: looksLikeTechnicalRequirement(sentence)
       });
     }
 
     return matches;
+  }
+
+  function buildSentenceRecords(text) {
+    return splitIntoSentences(text).map((sentence, index) => ({
+      index,
+      text: sentence,
+      lower: sentence.toLowerCase(),
+      isHeading: looksLikeSectionHeading(sentence)
+    }));
   }
 
   function containsAlias(sentence, alias) {
@@ -1516,6 +1583,65 @@
     const matcher = new RegExp(`(^|[^a-z0-9])${escaped}([^a-z0-9]|$)`, "i");
 
     return matcher.test(sentence);
+  }
+
+  function findMatchedAlias(item, sentence) {
+    const directAlias = item.aliases.find((alias) => containsAlias(sentence, alias));
+    if (directAlias) {
+      return directAlias;
+    }
+
+    if (item.name === "REST APIs" && containsRestApiContext(sentence)) {
+      return "rest contextual match";
+    }
+
+    return null;
+  }
+
+  function containsRestApiContext(sentence) {
+    return /\brest(?:ful)?(?:\s*\/\s*soap)?(?:[-\s]+(?:based|style|driven))?[-\s]+(?:apis?|services?|endpoints?|framework|integration|integrations)\b/i.test(
+      sentence
+    );
+  }
+
+  function collectContextRecords(sentenceRecords, index) {
+    const current = sentenceRecords[index];
+    const previous = sentenceRecords[index - 1];
+    const context = [];
+
+    if (isRelevantContextRecord(previous)) {
+      context.push(previous);
+    }
+
+    context.push(current);
+
+    return context;
+  }
+
+  function isRelevantContextRecord(record) {
+    if (!record) {
+      return false;
+    }
+
+    return record.isHeading;
+  }
+
+  function hasContextualHint(contextRecords, currentRecord, hints) {
+    return contextRecords.some((record) => {
+      if (record.index === currentRecord.index) {
+        return false;
+      }
+
+      if (!record.isHeading) {
+        return false;
+      }
+
+      return hasHint(record.lower, hints);
+    });
+  }
+
+  function hasHint(lowerText, hints) {
+    return hints.some((hint) => lowerText.includes(hint));
   }
 
   function parseYears(sentence) {
@@ -1539,30 +1665,100 @@
     return null;
   }
 
+  function parseYearsFromContext(contextRecords, currentRecord) {
+    for (const record of contextRecords) {
+      if (record.index === currentRecord.index) {
+        continue;
+      }
+
+      const years = parseYears(record.text);
+      if (years !== null) {
+        return years;
+      }
+    }
+
+    return null;
+  }
+
+  function looksLikeSectionHeading(sentence) {
+    const trimmed = sentence.trim();
+    const lower = trimmed.toLowerCase();
+    const headingTerms = [
+      "qualifications",
+      "required qualifications",
+      "preferred qualifications",
+      "requirements",
+      "responsibilities",
+      "must have",
+      "nice to have",
+      "bonus points",
+      "about the job",
+      "job summary",
+      "position summary",
+      "what you'll do",
+      "what you will do"
+    ];
+
+    if (trimmed.length <= 90 && trimmed.endsWith(":")) {
+      return true;
+    }
+
+    if (
+      trimmed.length <= 56 &&
+      !/[.!?]$/.test(trimmed) &&
+      headingTerms.some((term) => lower === term || lower.startsWith(`${term} `))
+    ) {
+      return true;
+    }
+
+    return (
+      trimmed.length <= 56 &&
+      !/[.!?]$/.test(trimmed) &&
+      trimmed.split(/\s+/).length <= 6 &&
+      /^[A-Z][A-Za-z0-9/&(),+\- ]+$/.test(trimmed)
+    );
+  }
+
+  function looksLikeTechnicalRequirement(sentence) {
+    return /(develop|building|build|implement|design|architecture|api|backend|frontend|service|database|cloud|experience|proficien|knowledge|stack|microservice|deployment|security)/i.test(
+      sentence
+    );
+  }
+
   function calculateScore(matches) {
+    const mentionCount = unique(matches.map((match) => match.sentence)).length;
     let bestScore = 0;
 
     for (const match of matches) {
-      let score = 45;
+      let score = 34;
 
       if (match.isRequired) {
-        score += 25;
+        score += 24;
       }
 
       if (match.isStrong) {
-        score += 12;
+        score += 10;
       }
 
-      if (match.isPreferred) {
-        score -= 10;
+      if (match.isPreferred && !match.isRequired) {
+        score -= 8;
       }
 
       if (match.years !== null) {
-        score += Math.min(match.years * 4, 25);
+        const yearBonus = match.yearsSource === "direct" ? 10 + match.years * 2 : 6 + match.years * 2;
+        score += Math.min(yearBonus, match.yearsSource === "direct" ? 24 : 18);
       }
 
-      if (matches.length > 1) {
-        score += Math.min((matches.length - 1) * 6, 12);
+      if (match.looksTechnical) {
+        score += 5;
+      }
+
+      if (!match.isRequired && !match.isStrong && match.years === null && !match.looksTechnical) {
+        score -= 6;
+      }
+
+      if (mentionCount > 1) {
+        score += Math.min((mentionCount - 1) * 4, 10);
       }
 
       bestScore = Math.max(bestScore, score);
@@ -1575,28 +1771,29 @@
     const reasons = new Set();
 
     if (matches.some((match) => match.isRequired)) {
-      reasons.add("Required-style wording found");
+      reasons.add("Required evidence");
     }
 
     if (matches.some((match) => match.isStrong)) {
-      reasons.add("Strong experience wording found");
+      reasons.add("Strong experience evidence");
     }
 
     if (matches.some((match) => match.isPreferred)) {
-      reasons.add("Preferred-style wording found");
+      reasons.add("Preferred evidence");
     }
 
     const maxYears = Math.max(...matches.map((match) => match.years || 0));
     if (maxYears > 0) {
-      reasons.add(`${maxYears}+ year requirement mentioned`);
+      reasons.add(`${maxYears}+ years near keyword`);
     }
 
-    if (matches.length > 1) {
-      reasons.add(`Mentioned in ${matches.length} separate sentences`);
+    const mentionCount = unique(matches.map((match) => match.sentence)).length;
+    if (mentionCount > 1) {
+      reasons.add(`Seen in ${mentionCount} JD lines`);
     }
 
     if (reasons.size === 0) {
-      reasons.add("Direct keyword mention found");
+      reasons.add("Direct mention");
     }
 
     return Array.from(reasons);
