@@ -21,6 +21,40 @@
         <p id="status" class="status">Open an Indeed or LinkedIn job page to launch the analyzer.</p>
       </section>
 
+      <section class="autofill-section">
+        <div class="autofill-copy">
+          <h2>Form Autofill Memory</h2>
+          <p class="subtle">One switch for LinkedIn and GitHub profile field scan + auto-fill</p>
+        </div>
+        <label class="switch" for="autofillToggle" aria-label="Enable form autofill memory">
+          <input id="autofillToggle" type="checkbox" />
+          <span class="slider"></span>
+        </label>
+      </section>
+
+      <section class="memory-section">
+        <div class="memory-header">
+          <div>
+            <h2>Form Memory Snapshot</h2>
+            <p class="subtle">Quick check for manually saved field key-value entries</p>
+          </div>
+          <div class="memory-actions">
+            <button id="refreshMemoryButton" class="secondary-button">Refresh Memory</button>
+            <button id="copyMemoryButton" class="secondary-button">Copy JSON</button>
+          </div>
+        </div>
+        <div class="memory-grid">
+          <div class="memory-row">
+            <span>Saved Field Keys</span>
+            <strong id="memoryManualCount">0</strong>
+          </div>
+          <div class="memory-row">
+            <span>Last Updated</span>
+            <strong id="memoryLastUpdated">-</strong>
+          </div>
+        </div>
+      </section>
+
       <section class="cache-section">
         <div class="cache-header">
           <div>

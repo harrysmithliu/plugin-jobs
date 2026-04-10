@@ -11,5 +11,24 @@
   "action": {
     "default_title": "JD Keyword Analyzer",
     "default_popup": "popup.html"
-  }
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
+      "js": [
+        "form-memory.js"
+      ],
+      "run_at": "document_idle",
+      "match_about_blank": true,
+      "match_origin_as_fallback": true,
+      "all_frames": true
+    }
+  ],
+  "host_permissions": [
+    "http://*/*",
+    "https://*/*"
+  ]
 }

@@ -5,10 +5,42 @@ const copyCacheButton = document.getElementById("copyCacheButton");
 const downloadCacheButton = document.getElementById("downloadCacheButton");
 const cacheListElement = document.getElementById("cacheList");
 const cacheEmptyStateElement = document.getElementById("cacheEmptyState");
+const autofillToggle = document.getElementById("autofillToggle");
+const refreshMemoryButton = document.getElementById("refreshMemoryButton");
+const copyMemoryButton = document.getElementById("copyMemoryButton");
+const memoryManualCountElement = document.getElementById("memoryManualCount");
+const memoryLastUpdatedElement = document.getElementById("memoryLastUpdated");
 
 let latestCacheEntries = [];
+let isAutofillEnabled = false;
+let latestManualEntriesByKey = {};
+
+const SETTINGS_KEY = "formMemory.enabled";
+const MANUAL_ENTRIES_KEY = "formMemory.manualEntriesByKey";
 
 initializePopup();
+
+autofillToggle.addEventListener("change", async () => {
+  const nextValue = Boolean(autofillToggle.checked);
+
+  try {
+    await chrome.storage.local.set({ [SETTINGS_KEY]: nextValue });
+    isAutofillEnabled = nextValue;
+
+    if (nextValue) {
+      await injectFormMemoryToActiveTab();
+    }
+
+    setStatus(
+      nextValue
+        ? "Form memory enabled. Save buttons should appear on editable fields in this page."
+        : "Form memory disabled. No scan or auto-fill will run."
+    );
+  } catch (error) {
+    autofillToggle.checked = isAutofillEnabled;
+    setStatus(error.message || "Unable to update form memory setting.", true);
+  }
+});
 
 launchButton.addEventListener("click", async () => {
   setStatus("Opening floating analyzer on the current page...");
@@ -40,6 +72,27 @@ launchButton.addEventListener("click", async () => {
 
 refreshCacheButton.addEventListener("click", async () => {
   await loadRecentCacheEntries(true);
+});
+
+refreshMemoryButton.addEventListener("click", async () => {
+  await loadFormMemorySnapshot(true);
+});
+
+copyMemoryButton.addEventListener("click", async () => {
+  if (Object.keys(latestManualEntriesByKey).length === 0) {
+    setStatus("No form memory entries to copy.", true);
+    return;
+  }
+
+  try {
+    const payload = {
+      [MANUAL_ENTRIES_KEY]: latestManualEntriesByKey
+    };
+    await navigator.clipboard.writeText(JSON.stringify(payload, null, 2));
+    setStatus(`Copied ${Object.keys(latestManualEntriesByKey).length} form memory entries as JSON.`);
+  } catch (error) {
+    setStatus(error.message || "Unable to copy form memory JSON.", true);
+  }
 });
 
 copyCacheButton.addEventListener("click", async () => {
@@ -77,6 +130,10 @@ downloadCacheButton.addEventListener("click", () => {
 
 async function initializePopup() {
   try {
+    const autofillSetting = await chrome.storage.local.get({ [SETTINGS_KEY]: false });
+    isAutofillEnabled = Boolean(autofillSetting[SETTINGS_KEY]);
+    autofillToggle.checked = isAutofillEnabled;
+
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
 
     if (!tab?.url) {
@@ -89,12 +146,17 @@ async function initializePopup() {
       const hostname = new URL(tab.url).hostname.replace(/^www\./, "");
       setStatus(`Ready to open the floating analyzer on ${hostname}.`);
     }
+
+    if (isAutofillEnabled) {
+      await injectFormMemoryToActiveTab();
+    }
   } catch (error) {
     setStatus(error.message || "Unable to inspect the active tab.", true);
     launchButton.disabled = true;
   }
 
   await loadRecentCacheEntries();
+  await loadFormMemorySnapshot();
 }
 
 function isSupportedUrl(url) {
@@ -111,6 +173,18 @@ function isSupportedUrl(url) {
   } catch (_error) {
     return false;
   }
+}
+
+async function injectFormMemoryToActiveTab() {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab?.id || !tab.url || !/^https?:\/\//i.test(tab.url)) {
+    return;
+  }
+
+  await chrome.scripting.executeScript({
+    target: { tabId: tab.id, allFrames: true },
+    files: ["form-memory.js"]
+  });
 }
 
 function setStatus(message, isError = false) {
@@ -137,6 +211,33 @@ async function loadRecentCacheEntries(isManualRefresh = false) {
     }
   } catch (error) {
     setStatus(error.message || "Unable to load cached JD entries.", true);
+  }
+}
+
+async function loadFormMemorySnapshot(isManualRefresh = false) {
+  try {
+    const stored = await chrome.storage.local.get({
+      [MANUAL_ENTRIES_KEY]: {}
+    });
+
+    const manualEntriesByKey = stored[MANUAL_ENTRIES_KEY] || {};
+    latestManualEntriesByKey = manualEntriesByKey;
+    const manualEntries = Object.values(manualEntriesByKey)
+      .filter(Boolean)
+      .sort((left, right) => {
+        const leftTime = new Date(left.updatedAt || 0).getTime();
+        const rightTime = new Date(right.updatedAt || 0).getTime();
+        return rightTime - leftTime;
+      });
+
+    memoryManualCountElement.textContent = `${manualEntries.length}`;
+    memoryLastUpdatedElement.textContent = formatDateTime(manualEntries[0]?.updatedAt || "");
+
+    if (isManualRefresh) {
+      setStatus(`Memory loaded: ${manualEntries.length} manual entries.`);
+    }
+  } catch (error) {
+    setStatus(error.message || "Unable to load form memory snapshot.", true);
   }
 }
 
@@ -215,10 +316,14 @@ function toExportPayload(entries) {
 }
 
 function formatDateTime(isoString) {
+  if (!isoString) {
+    return "-";
+  }
+
   const parsed = new Date(isoString);
 
   if (Number.isNaN(parsed.getTime())) {
-    return "Unknown time";
+    return "-";
   }
 
   return parsed.toLocaleString();
