@@ -425,6 +425,72 @@
         gap: 10px 16px;
       }
 
+      .color-summary-card {
+        margin-bottom: 14px;
+        border: 1px solid #dde3e8;
+        border-radius: 12px;
+        background: #ffffff;
+        padding: 12px;
+      }
+
+      .color-summary-card h2 {
+        margin: 0 0 12px;
+        font-size: 15px;
+      }
+
+      .color-summary-list {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
+      }
+
+      .color-summary-item {
+        border: 1px solid #e5e7eb;
+        border-radius: 12px;
+        padding: 12px;
+        background: #fafafa;
+        border-left-width: 6px;
+      }
+
+      .color-summary-item--green {
+        border-left-color: #2f855a;
+      }
+
+      .color-summary-item--yellow {
+        border-left-color: #b7791f;
+      }
+
+      .color-summary-item--orange {
+        border-left-color: #dd6b20;
+      }
+
+      .color-summary-item--red {
+        border-left-color: #c53030;
+      }
+
+      .color-summary-top {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+      }
+
+      .color-summary-name {
+        font-weight: 700;
+      }
+
+      .color-summary-share {
+        font-weight: 800;
+        font-size: 18px;
+        color: #111827;
+      }
+
+      .color-summary-meta {
+        margin-top: 6px;
+        color: #52606d;
+        font-size: 12px;
+      }
+
       .summary-row {
         display: flex;
         flex-direction: column;
@@ -567,6 +633,10 @@
           grid-template-columns: 1fr;
         }
 
+        .color-summary-list {
+          grid-template-columns: 1fr;
+        }
+
         .header {
           flex-wrap: wrap;
           cursor: default;
@@ -621,6 +691,11 @@
           </div>
         </section>
 
+        <section id="colorSummarySection" class="color-summary-card" hidden>
+          <h2>Color Breakdown</h2>
+          <div id="colorSummaryList" class="color-summary-list"></div>
+        </section>
+
         <section id="resultsSection" class="results" hidden>
           <h2>Keyword Scores</h2>
           <div id="resultsList" class="results-list"></div>
@@ -641,6 +716,8 @@
   const dragHandle = shadow.getElementById("dragHandle");
   const statusElement = shadow.getElementById("status");
   const summarySection = shadow.getElementById("summarySection");
+  const colorSummarySection = shadow.getElementById("colorSummarySection");
+  const colorSummaryList = shadow.getElementById("colorSummaryList");
   const resultsSection = shadow.getElementById("resultsSection");
   const rawSection = shadow.getElementById("rawSection");
   const resultsList = shadow.getElementById("resultsList");
@@ -735,6 +812,7 @@
     );
 
     summarySection.hidden = false;
+    colorSummarySection.hidden = false;
     resultsSection.hidden = false;
     toggleRawButton.hidden = false;
     rawTextElement.textContent = extraction.jobText;
@@ -747,6 +825,7 @@
     cachedAtElement.textContent = extractedAt ? formatDateTime(extractedAt) : "Not saved";
     currentUrlElement.textContent = extraction.url || window.location.href;
 
+    renderColorSummary(analysis.results);
     resultsList.replaceChildren();
 
     const orderedResults = sortResultsForDisplay(analysis.results);
@@ -789,7 +868,7 @@
 
         for (const snippet of item.snippets) {
           const snippetItem = document.createElement("li");
-          snippetItem.textContent = snippet;
+          appendHighlightedSnippet(snippetItem, snippet, item.name);
           snippets.appendChild(snippetItem);
         }
 
@@ -807,10 +886,141 @@
 
   function hideResults() {
     summarySection.hidden = true;
+    colorSummarySection.hidden = true;
     resultsSection.hidden = true;
     rawSection.hidden = true;
     toggleRawButton.hidden = true;
+    colorSummaryList.replaceChildren();
     resultsList.replaceChildren();
+  }
+
+  function renderColorSummary(results) {
+    colorSummaryList.replaceChildren();
+
+    const breakdown = buildColorBreakdown(results);
+    const order = ["green", "yellow", "orange", "red"];
+
+    for (const color of order) {
+      const item = breakdown[color];
+      const card = document.createElement("article");
+      card.className = `color-summary-item color-summary-item--${color}`;
+
+      const top = document.createElement("div");
+      top.className = "color-summary-top";
+
+      const name = document.createElement("div");
+      name.className = "color-summary-name";
+      name.textContent = `${COLOR_LABELS[color]} Zone`;
+
+      const share = document.createElement("div");
+      share.className = "color-summary-share";
+      share.textContent = `${item.share}%`;
+
+      top.append(name, share);
+
+      const meta = document.createElement("div");
+      meta.className = "color-summary-meta";
+      meta.textContent = `${item.matchedCount} matched keywords | ${item.totalScore} total points`;
+
+      card.append(top, meta);
+      colorSummaryList.appendChild(card);
+    }
+  }
+
+  function buildColorBreakdown(results) {
+    const breakdown = {
+      green: { totalScore: 0, matchedCount: 0, share: 0 },
+      yellow: { totalScore: 0, matchedCount: 0, share: 0 },
+      orange: { totalScore: 0, matchedCount: 0, share: 0 },
+      red: { totalScore: 0, matchedCount: 0, share: 0 }
+    };
+
+    for (const result of results) {
+      const color = getColorGroup(result.name);
+      breakdown[color].totalScore += result.score;
+
+      if (result.score > 0) {
+        breakdown[color].matchedCount += 1;
+      }
+    }
+
+    const totalScore = Object.values(breakdown).reduce((sum, item) => sum + item.totalScore, 0);
+
+    for (const item of Object.values(breakdown)) {
+      item.share = totalScore > 0 ? Math.round((item.totalScore / totalScore) * 100) : 0;
+    }
+
+    return breakdown;
+  }
+
+  function appendHighlightedSnippet(container, snippet, keywordName) {
+    const aliases = getAliasesForKeyword(keywordName);
+    const matches = findAliasMatches(snippet, aliases);
+
+    if (matches.length === 0) {
+      container.textContent = snippet;
+      return;
+    }
+
+    let cursor = 0;
+
+    for (const match of matches) {
+      if (match.start > cursor) {
+        container.appendChild(document.createTextNode(snippet.slice(cursor, match.start)));
+      }
+
+      const strong = document.createElement("strong");
+      strong.textContent = snippet.slice(match.start, match.end);
+      container.appendChild(strong);
+      cursor = match.end;
+    }
+
+    if (cursor < snippet.length) {
+      container.appendChild(document.createTextNode(snippet.slice(cursor)));
+    }
+  }
+
+  function getAliasesForKeyword(keywordName) {
+    for (const group of KEYWORD_GROUPS) {
+      const item = group.items.find((entry) => entry.name === keywordName);
+      if (item) {
+        return [item.name, ...item.aliases];
+      }
+    }
+
+    return [keywordName];
+  }
+
+  function findAliasMatches(text, aliases) {
+    const sortedAliases = unique(
+      aliases
+        .filter(Boolean)
+        .map((alias) => alias.trim())
+        .filter(Boolean)
+    ).sort((left, right) => right.length - left.length);
+
+    const matches = [];
+
+    for (const alias of sortedAliases) {
+      const escaped = alias.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const matcher = new RegExp(`(^|[^a-z0-9])(${escaped})(?=$|[^a-z0-9])`, "gi");
+      let found;
+
+      while ((found = matcher.exec(text)) !== null) {
+        const fullMatch = found[0];
+        const matchedText = found[2];
+        const start = found.index + (fullMatch.length - matchedText.length);
+        const end = start + matchedText.length;
+
+        if (matches.some((existing) => !(end <= existing.start || start >= existing.end))) {
+          continue;
+        }
+
+        matches.push({ start, end });
+      }
+    }
+
+    return matches.sort((left, right) => left.start - right.start);
   }
 
   function setLoading(isLoading) {
