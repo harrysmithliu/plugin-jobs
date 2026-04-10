@@ -16,9 +16,38 @@
     /^--+$/,
     /^n\/a$/i
   ];
+  const FUZZY_MATCH_THRESHOLD = 0.78;
+  const FUZZY_STOP_WORDS = new Set([
+    "a",
+    "an",
+    "and",
+    "any",
+    "are",
+    "be",
+    "by",
+    "can",
+    "could",
+    "current",
+    "currently",
+    "do",
+    "for",
+    "in",
+    "is",
+    "its",
+    "of",
+    "or",
+    "our",
+    "the",
+    "to",
+    "with",
+    "would",
+    "you",
+    "your"
+  ]);
 
   const fieldButtons = new Map();
   const knownFields = new Set();
+  const autofillRetryCount = new WeakMap();
 
   let isEnabled = false;
   let cachedEntriesByKey = {};
@@ -109,7 +138,7 @@
       }
 
       const normalizedLabel = cleanLabelChunk(rawEntry.label || rawKey || "");
-      const normalizedKey = normalizeToken(normalizedLabel || rawKey || "");
+      const normalizedKey = canonicalizeKey(normalizedLabel || rawKey || "");
       if (!normalizedKey) {
         changed = true;
         continue;
@@ -334,8 +363,13 @@
       return;
     }
 
-    const entry = cachedEntriesByKey[keyData.key];
+    const fieldTypeGroup = getFieldTypeGroup(field);
+    const entry = resolveEntryByKey(keyData.key, fieldTypeGroup);
     if (!entry) {
+      return;
+    }
+
+    if (!isValueCompatibleWithKey(keyData.key, entry, fieldTypeGroup, keyData.evidence)) {
       return;
     }
 
@@ -371,6 +405,7 @@
     setNativeInputValue(field, entry.value);
     field.dispatchEvent(new Event("input", { bubbles: true }));
     field.dispatchEvent(new Event("change", { bubbles: true }));
+    scheduleAutofillRetry(field, entry.value);
   }
 
   async function saveFieldValue(field, button) {
@@ -453,12 +488,15 @@
   function buildFieldKeyData(field) {
     const label = readFieldLabelText(field);
     const fallback = field.getAttribute("name") || field.getAttribute("id") || "";
-    const keySource = label || fallback;
-    const key = normalizeToken(keySource);
+    const semanticHint = buildFieldSemanticHint(field, label, fallback);
+    const keySource = semanticHint || label || fallback;
+    const key = canonicalizeKey(keySource);
+    const evidence = buildFieldEvidence(field, label, fallback);
 
     return {
       key,
-      label: label || fallback || "Unknown field"
+      label: label || fallback || "Unknown field",
+      evidence
     };
   }
 
@@ -486,6 +524,25 @@
       }
     }
 
+    const ariaLabel = field.getAttribute("aria-label");
+    if (ariaLabel) {
+      pushChunk(ariaLabel);
+    }
+
+    const ariaLabelledBy = field.getAttribute("aria-labelledby");
+    if (ariaLabelledBy) {
+      const ids = ariaLabelledBy
+        .split(/\s+/)
+        .map((value) => value.trim())
+        .filter(Boolean);
+      for (const refId of ids) {
+        const refElement = document.getElementById(refId);
+        if (refElement) {
+          pushChunk(refElement.textContent || "");
+        }
+      }
+    }
+
     const id = field.getAttribute("id");
     if (id) {
       const forLabel = document.querySelector(`label[for="${cssEscape(id)}"]`);
@@ -501,8 +558,11 @@
 
     let previous = field.previousElementSibling;
     let hops = 0;
-    while (previous && hops < 5) {
-      pushChunk(previous.textContent || "");
+    while (previous && hops < 2) {
+      const candidate = cleanLabelChunk(previous.textContent || "");
+      if (looksLikeQuestionLabel(candidate)) {
+        pushChunk(candidate);
+      }
       previous = previous.previousElementSibling;
       hops += 1;
     }
@@ -515,14 +575,6 @@
       }
     }
 
-    const container = field.closest("div, td, li, section, form");
-    if (container) {
-      const candidate = container.querySelector("label, legend, h1, h2, h3, h4, strong, p, span");
-      if (candidate) {
-        pushChunk(candidate.textContent || "");
-      }
-    }
-
     const merged = chunks
       .join(" ")
       .replace(/\s+/g, " ")
@@ -532,6 +584,29 @@
     return cleanLabelChunk(merged).slice(0, MAX_CONTEXT_LENGTH);
   }
 
+  function looksLikeQuestionLabel(text) {
+    const normalized = cleanLabelChunk(text);
+    if (!normalized) {
+      return false;
+    }
+
+    const lower = normalizeLooseToken(normalized);
+    if (!lower) {
+      return false;
+    }
+
+    if (lower.includes("save") || lower.includes("next") || lower.includes("previous")) {
+      return false;
+    }
+
+    const words = lower.split(" ").filter(Boolean);
+    if (words.length > 20) {
+      return false;
+    }
+
+    return /[a-z0-9]/i.test(lower);
+  }
+
   function cleanLabelChunk(text) {
     const cleaned = String(text || "")
       .replace(/\s+/g, " ")
@@ -539,8 +614,80 @@
       .replace(/\s*:\s*$/, "")
       .trim();
 
+    const colonParts = cleaned
+      .split(/\s*:\s*/)
+      .map((part) => part.trim())
+      .filter(Boolean);
+    if (
+      colonParts.length === 2 &&
+      normalizeLooseToken(colonParts[0]) &&
+      normalizeLooseToken(colonParts[0]) === normalizeLooseToken(colonParts[1])
+    ) {
+      return colonParts[0];
+    }
+
     const repeated = cleaned.match(/^(.{2,120}?)\s+\1$/i);
     return repeated ? repeated[1].trim() : cleaned;
+  }
+
+  function resolveEntryByKey(key, fieldTypeGroup) {
+    const direct = cachedEntriesByKey[key];
+    if (direct && isEntryCompatibleWithField(direct, fieldTypeGroup)) {
+      return direct;
+    }
+
+    // Text input auto-fill should be conservative to avoid harmful mis-fill.
+    if (fieldTypeGroup === "text") {
+      return null;
+    }
+
+    const targetLoose = normalizeLooseToken(key);
+    if (!targetLoose) {
+      return null;
+    }
+
+    let bestEntry = null;
+    let bestScore = -1;
+    let bestUpdatedAt = 0;
+
+    for (const [entryKey, entry] of Object.entries(cachedEntriesByKey || {})) {
+      if (!entry) {
+        continue;
+      }
+
+      if (!isEntryCompatibleWithField(entry, fieldTypeGroup)) {
+        continue;
+      }
+
+      const entryLoose = normalizeLooseToken(entryKey);
+      if (!entryLoose) {
+        continue;
+      }
+
+      let score = 0;
+      if (
+        entryLoose === targetLoose ||
+        (targetLoose.length >= 12 && entryLoose.includes(targetLoose)) ||
+        (entryLoose.length >= 12 && targetLoose.includes(entryLoose))
+      ) {
+        score = 0.95;
+      } else {
+        score = computeFuzzyScore(targetLoose, entryLoose);
+      }
+
+      if (score < FUZZY_MATCH_THRESHOLD) {
+        continue;
+      }
+
+      const updatedAt = new Date(entry.updatedAt || 0).getTime();
+      if (score > bestScore || (score === bestScore && updatedAt > bestUpdatedAt)) {
+        bestEntry = entry;
+        bestScore = score;
+        bestUpdatedAt = updatedAt;
+      }
+    }
+
+    return bestEntry;
   }
 
   function hasMeaningfulSelectValue(select) {
@@ -559,6 +706,330 @@
       .toLowerCase()
       .replace(/\s+/g, " ")
       .trim();
+  }
+
+  function normalizeLooseToken(text) {
+    return normalizeToken(text)
+      .replace(/[^\p{L}\p{N}]+/gu, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  function buildFieldEvidence(field, label, fallback) {
+    return normalizeLooseToken(
+      [
+        label,
+        fallback,
+        field.getAttribute("aria-label"),
+        field.getAttribute("placeholder"),
+        field.getAttribute("name"),
+        field.getAttribute("id"),
+        field.getAttribute("autocomplete"),
+        field.getAttribute("data-ph-at-id")
+      ]
+        .filter(Boolean)
+        .join(" ")
+    );
+  }
+
+  function getFieldTypeGroup(field) {
+    return field.tagName === "SELECT" ? "select" : "text";
+  }
+
+  function isEntryCompatibleWithField(entry, fieldTypeGroup) {
+    if (!entry || !fieldTypeGroup) {
+      return false;
+    }
+
+    if (fieldTypeGroup === "select") {
+      return entry.fieldType === "select";
+    }
+
+    return entry.fieldType !== "select";
+  }
+
+  function computeFuzzyScore(targetLoose, entryLoose) {
+    const targetTokens = tokenizeForFuzzy(targetLoose);
+    const entryTokens = tokenizeForFuzzy(entryLoose);
+    if (targetTokens.length === 0 || entryTokens.length === 0) {
+      return 0;
+    }
+
+    const targetSet = new Set(targetTokens);
+    const entrySet = new Set(entryTokens);
+    let overlap = 0;
+    for (const token of targetSet) {
+      if (entrySet.has(token)) {
+        overlap += 1;
+      }
+    }
+
+    if (overlap === 0) {
+      return 0;
+    }
+
+    const precision = overlap / entrySet.size;
+    const recall = overlap / targetSet.size;
+    const f1 = (2 * precision * recall) / (precision + recall);
+    const bigramScore = computeBigramScore(targetTokens, entryTokens);
+    const anchorBoost = computeAnchorBoost(targetLoose, entryLoose);
+    return Math.min(0.94, 0.65 * f1 + 0.3 * bigramScore + anchorBoost);
+  }
+
+  function tokenizeForFuzzy(text) {
+    return normalizeLooseToken(text)
+      .split(" ")
+      .map((part) => part.trim())
+      .filter((part) => part.length >= 3)
+      .filter((part) => !FUZZY_STOP_WORDS.has(part));
+  }
+
+  function computeBigramScore(leftTokens, rightTokens) {
+    const leftBigrams = toBigrams(leftTokens);
+    const rightBigrams = new Set(toBigrams(rightTokens));
+    if (leftBigrams.length === 0 || rightBigrams.size === 0) {
+      return 0;
+    }
+
+    let matches = 0;
+    for (const gram of leftBigrams) {
+      if (rightBigrams.has(gram)) {
+        matches += 1;
+      }
+    }
+
+    return matches / leftBigrams.length;
+  }
+
+  function toBigrams(tokens) {
+    const grams = [];
+    for (let index = 0; index < tokens.length - 1; index += 1) {
+      grams.push(`${tokens[index]} ${tokens[index + 1]}`);
+    }
+    return grams;
+  }
+
+  function computeAnchorBoost(targetLoose, entryLoose) {
+    const anchors = [
+      ["legally authorized", "work"],
+      ["currently live"],
+      ["non compete"],
+      ["retain your information"],
+      ["relocating", "remote"],
+      ["employee", "contractor"],
+      ["hybrid", "office"]
+    ];
+
+    let boost = 0;
+    for (const group of anchors) {
+      const targetHasAll = group.every((term) => targetLoose.includes(term));
+      if (!targetHasAll) {
+        continue;
+      }
+
+      const entryHasAll = group.every((term) => entryLoose.includes(term));
+      if (entryHasAll) {
+        boost += 0.08;
+      }
+    }
+
+    return Math.min(0.16, boost);
+  }
+
+  function scheduleAutofillRetry(field, value) {
+    const current = autofillRetryCount.get(field) || 0;
+    if (current >= 3) {
+      return;
+    }
+
+    autofillRetryCount.set(field, current + 1);
+    window.setTimeout(() => {
+      if (!field.isConnected) {
+        return;
+      }
+
+      const liveValue = String(field.value || "").trim();
+      if (liveValue) {
+        return;
+      }
+
+      setNativeInputValue(field, value);
+      field.dispatchEvent(new Event("input", { bubbles: true }));
+      field.dispatchEvent(new Event("change", { bubbles: true }));
+      scheduleAutofillRetry(field, value);
+    }, 260);
+  }
+
+  function buildFieldSemanticHint(field, label, fallback) {
+    const chunks = [
+      label,
+      fallback,
+      field.getAttribute("aria-label"),
+      field.getAttribute("placeholder"),
+      field.getAttribute("name"),
+      field.getAttribute("id"),
+      field.getAttribute("autocomplete"),
+      field.getAttribute("data-ph-at-id")
+    ];
+
+    const loose = normalizeLooseToken(chunks.filter(Boolean).join(" "));
+    if (!loose) {
+      return "";
+    }
+
+    if (loose.includes("linkedin") && (loose.includes("profile") || loose.includes("url") || loose.includes("social"))) {
+      return "linkedin profile";
+    }
+
+    if (loose.includes("github") && (loose.includes("profile") || loose.includes("url") || loose.includes("social"))) {
+      return "github profile";
+    }
+
+    return "";
+  }
+
+  function canonicalizeKey(text) {
+    const loose = normalizeLooseToken(text);
+    if (!loose) {
+      return "";
+    }
+
+    if (loose.includes("linkedin profile")) {
+      return "linkedin profile";
+    }
+
+    if (loose.includes("github profile")) {
+      return "github profile";
+    }
+
+    if (
+      loose.includes("authorized") &&
+      loose.includes("work") &&
+      (loose.includes("country") || loose.includes("legally") || loose.includes("canada"))
+    ) {
+      return "work authorization";
+    }
+
+    if (
+      loose.includes("currently live") ||
+      (loose.includes("current") && loose.includes("live")) ||
+      loose.includes("country of residence") ||
+      loose.includes("where do you live") ||
+      loose.includes("地点") ||
+      loose.includes("所在地") ||
+      loose.includes("居住")
+    ) {
+      return "current location";
+    }
+
+    if (loose.includes("non compete")) {
+      return "non compete agreement";
+    }
+
+    if (loose.includes("retain your information") || loose.includes("positions in the future")) {
+      return "retain information future roles";
+    }
+
+    if (
+      loose.includes("open to relocating") ||
+      loose.includes("remote opportunities") ||
+      loose.includes("relocat")
+    ) {
+      return "relocation preference";
+    }
+
+    if (
+      (loose.includes("employee") && loose.includes("contractor")) ||
+      (loose.includes("employed") && loose.includes("company"))
+    ) {
+      return "employee or contractor history";
+    }
+
+    if (loose.includes("hybrid work") && loose.includes("office")) {
+      return "hybrid onsite comfort";
+    }
+
+    if (
+      (loose.includes("salary") || loose.includes("compensation") || loose.includes("pay")) &&
+      (
+        loose.includes("requirement") ||
+        loose.includes("requirements") ||
+        loose.includes("expectation") ||
+        loose.includes("expectations") ||
+        loose.includes("expected") ||
+        loose.includes("desired") ||
+        loose.includes("range")
+      )
+    ) {
+      return "salary expectation";
+    }
+
+    if (loose.includes("薪资") || loose.includes("薪酬") || loose.includes("工资") || loose.includes("期望薪资")) {
+      return "salary expectation";
+    }
+
+    return normalizeToken(text);
+  }
+
+  function isValueCompatibleWithKey(key, entry, fieldTypeGroup, evidence = "") {
+    const value = String(entry?.optionText || entry?.value || "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .toLowerCase();
+
+    if (!value) {
+      return false;
+    }
+
+    if (fieldTypeGroup === "select") {
+      return true;
+    }
+
+    const numericOnly = /^\d+(?:\.\d+)?$/.test(value);
+    const hasUrl = value.includes("http://") || value.includes("https://") || value.includes(".com/");
+
+    if (key === "linkedin profile") {
+      return value.includes("linkedin.com");
+    }
+
+    if (key === "github profile") {
+      return value.includes("github.com");
+    }
+
+    if (key === "salary expectation") {
+      return hasAnyKeyword(evidence, ["salary", "compensation", "pay", "薪资", "薪酬", "工资", "期望"]) && /\d/.test(value);
+    }
+
+    if (key === "current location") {
+      return (
+        hasAnyKeyword(evidence, ["location", "live", "residence", "city", "country", "地点", "所在地", "居住"]) &&
+        !numericOnly &&
+        !hasUrl
+      );
+    }
+
+    if (key.includes("job title")) {
+      return !numericOnly && !hasUrl;
+    }
+
+    if (key.includes("available") || key.includes("availability") || key.includes("start")) {
+      return !hasUrl;
+    }
+
+    // Unknown text keys are not auto-filled to reduce mis-fill risk.
+    return false;
+  }
+
+  function hasAnyKeyword(text, keywords) {
+    const normalized = normalizeLooseToken(text);
+    if (!normalized) {
+      return false;
+    }
+
+    return keywords.some((keyword) => {
+      const token = normalizeLooseToken(keyword);
+      return token && normalized.includes(token);
+    });
   }
 
   function setNativeInputValue(input, value) {

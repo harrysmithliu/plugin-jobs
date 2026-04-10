@@ -507,6 +507,29 @@
         word-break: break-word;
       }
 
+      .summary-history-badge {
+        display: inline-flex;
+        align-items: center;
+        width: fit-content;
+        border-radius: 999px;
+        padding: 4px 10px;
+        font-size: 12px;
+        font-weight: 700;
+        border: 1px solid transparent;
+      }
+
+      .summary-history-badge--seen {
+        background: #e6f6ec;
+        color: #1f6f43;
+        border-color: #b7e1c7;
+      }
+
+      .summary-history-badge--new {
+        background: #eef2f7;
+        color: #334155;
+        border-color: #d8e0ea;
+      }
+
       .results h2,
       .raw-section h2 {
         margin: 0 0 12px;
@@ -688,6 +711,10 @@
               <span>Current URL</span>
               <strong id="currentUrl">-</strong>
             </div>
+            <div class="summary-row">
+              <span>History</span>
+              <strong id="historyStatus" class="summary-history-badge summary-history-badge--new">Checking...</strong>
+            </div>
           </div>
         </section>
 
@@ -728,6 +755,7 @@
   const sourceLabelElement = shadow.getElementById("sourceLabel");
   const cachedAtElement = shadow.getElementById("cachedAt");
   const currentUrlElement = shadow.getElementById("currentUrl");
+  const historyStatusElement = shadow.getElementById("historyStatus");
 
   let isRawVisible = false;
   let isMaximized = false;
@@ -769,13 +797,17 @@
       }
 
       const analysis = analyzeJobText(extraction.jobText);
+      const meta = buildCacheEntryMeta(extraction);
+      const history = await detectAnalysisHistory(extraction, meta);
       const cacheEntry = {
         url: extraction.url,
         hostname: extraction.hostname,
         title: extraction.pageTitle,
         extractedAt: new Date().toISOString(),
         extraction,
-        analysis
+        analysis,
+        meta,
+        history
       };
 
       renderResult(cacheEntry, false);
@@ -789,7 +821,9 @@
       const cached = await getCachedAnalysis(window.location.href);
 
       if (cached) {
-        renderResult(cached, true);
+        const extraction = cached.extraction || { url: cached.url || window.location.href, jobText: "" };
+        const history = await detectAnalysisHistory(extraction, cached.meta);
+        renderResult({ ...cached, history }, true);
         setStatus(
           `Live extraction failed, showing cached analysis instead. ${error.message || ""}`.trim(),
           true
@@ -803,7 +837,7 @@
   }
 
   function renderResult(cacheEntry, fromCache) {
-    const { extraction, analysis, extractedAt } = cacheEntry;
+    const { extraction, analysis, extractedAt, history } = cacheEntry;
 
     setStatus(
       fromCache
@@ -824,6 +858,7 @@
     sourceLabelElement.textContent = extraction.extractionSource || extraction.hostname || "-";
     cachedAtElement.textContent = extractedAt ? formatDateTime(extractedAt) : "Not saved";
     currentUrlElement.textContent = extraction.url || window.location.href;
+    applyHistoryIndicator(history);
 
     renderColorSummary(analysis.results);
     resultsList.replaceChildren();
@@ -1165,6 +1200,22 @@
     return rank[color] ?? 99;
   }
 
+  function applyHistoryIndicator(history) {
+    const matchedBy = Array.isArray(history?.matchedBy) ? history.matchedBy : [];
+    const seenBefore = Boolean(history?.seenBefore || matchedBy.length > 0);
+    historyStatusElement.className = `summary-history-badge ${
+      seenBefore ? "summary-history-badge--seen" : "summary-history-badge--new"
+    }`;
+
+    if (!seenBefore) {
+      historyStatusElement.textContent = "New JD";
+      return;
+    }
+
+    historyStatusElement.textContent =
+      matchedBy.length > 0 ? `Seen before (${matchedBy.join(" + ")})` : "Seen before";
+  }
+
   async function saveCachedAnalysis(entry) {
     try {
       const stored = await chrome.storage.local.get({ analysisCacheByUrl: {} });
@@ -1193,6 +1244,109 @@
 
       throw error;
     }
+  }
+
+  async function detectAnalysisHistory(extraction, currentMeta = null) {
+    try {
+      const stored = await chrome.storage.local.get({ analysisCacheByUrl: {} });
+      const entries = Object.values(stored.analysisCacheByUrl || {}).filter(Boolean);
+      if (entries.length === 0) {
+        return { seenBefore: false, matchedBy: [] };
+      }
+
+      const currentUrl = extraction?.url || window.location.href;
+      const currentCanonicalUrl = currentMeta?.canonicalUrlKey || canonicalizeAnalysisUrl(currentUrl);
+      const currentTextHash = currentMeta?.jobTextHash || computeJobTextHash(extraction?.jobText || "");
+      let urlMatched = false;
+      let textMatched = false;
+
+      for (const entry of entries) {
+        const entryUrl = entry?.extraction?.url || entry?.url || "";
+        const entryCanonicalUrl = entry?.meta?.canonicalUrlKey || canonicalizeAnalysisUrl(entryUrl);
+        if (currentCanonicalUrl && entryCanonicalUrl && currentCanonicalUrl === entryCanonicalUrl) {
+          urlMatched = true;
+        }
+
+        const entryTextHash = entry?.meta?.jobTextHash || computeJobTextHash(entry?.extraction?.jobText || "");
+        if (currentTextHash && entryTextHash && currentTextHash === entryTextHash) {
+          textMatched = true;
+        }
+
+        if (urlMatched && textMatched) {
+          break;
+        }
+      }
+
+      const matchedBy = [];
+      if (urlMatched) {
+        matchedBy.push("URL");
+      }
+      if (textMatched) {
+        matchedBy.push("JD Text");
+      }
+
+      return {
+        seenBefore: matchedBy.length > 0,
+        matchedBy
+      };
+    } catch (error) {
+      if (isExtensionContextInvalidated(error)) {
+        return { seenBefore: false, matchedBy: [] };
+      }
+      throw error;
+    }
+  }
+
+  function buildCacheEntryMeta(extraction) {
+    return {
+      canonicalUrlKey: canonicalizeAnalysisUrl(extraction?.url || window.location.href),
+      jobTextHash: computeJobTextHash(extraction?.jobText || ""),
+      jobTextLength: String(extraction?.jobText || "").length
+    };
+  }
+
+  function canonicalizeAnalysisUrl(rawUrl) {
+    try {
+      const parsed = new URL(rawUrl || window.location.href);
+      const host = parsed.hostname.replace(/^www\./, "").toLowerCase();
+      const path = parsed.pathname.replace(/\/+$/, "");
+      const keyParams = new URLSearchParams();
+
+      if (host.includes("linkedin.com")) {
+        const currentJobId = parsed.searchParams.get("currentJobId") || parsed.searchParams.get("jobId");
+        if (currentJobId) {
+          keyParams.set("jobId", currentJobId);
+        }
+      } else if (host.includes("indeed.")) {
+        const indeedJobKey = parsed.searchParams.get("jk") || parsed.searchParams.get("vjk");
+        if (indeedJobKey) {
+          keyParams.set("jk", indeedJobKey);
+        }
+      }
+
+      const query = keyParams.toString();
+      return query ? `${host}${path}?${query}` : `${host}${path}`;
+    } catch (_error) {
+      return String(rawUrl || "").trim().toLowerCase();
+    }
+  }
+
+  function computeJobTextHash(jobText) {
+    const normalized = normalizeText(String(jobText || ""))
+      .slice(0, 16000)
+      .toLowerCase();
+
+    if (!normalized) {
+      return "";
+    }
+
+    let hash = 2166136261;
+    for (let index = 0; index < normalized.length; index += 1) {
+      hash ^= normalized.charCodeAt(index);
+      hash = Math.imul(hash, 16777619);
+    }
+
+    return `fnv1a-${(hash >>> 0).toString(16)}`;
   }
 
   function isExtensionContextInvalidated(error) {
@@ -1394,7 +1548,7 @@
     function findLinkedInJobDescription() {
       const headings = findHeadingElementsByText(["about the job"]);
       if (headings.length === 0) {
-        return null;
+        return findLinkedInJobDescriptionByContainerScan();
       }
 
       for (const heading of headings) {
@@ -1415,7 +1569,48 @@
         }
       }
 
-      return null;
+      return findLinkedInJobDescriptionByContainerScan();
+    }
+
+    function findLinkedInJobDescriptionByContainerScan() {
+      const containers = Array.from(document.querySelectorAll("section, article, div"));
+      const candidates = [];
+
+      for (const container of containers) {
+        if (!isVisibleish(container)) {
+          continue;
+        }
+
+        const text = cleanText(container.innerText || container.textContent || "");
+        const lower = text.toLowerCase();
+
+        if (!lower.includes("about the job")) {
+          continue;
+        }
+
+        if (text.length < 250 || text.length > 32000) {
+          continue;
+        }
+
+        const normalized = normalizeLinkedInJobText(text);
+        if (normalized.length >= 200) {
+          candidates.push({
+            text: normalized,
+            selector: describeElement(container),
+            length: normalized.length
+          });
+        }
+      }
+
+      if (!candidates.length) {
+        return null;
+      }
+
+      candidates.sort((left, right) => left.length - right.length);
+      return {
+        text: candidates[0].text,
+        selector: candidates[0].selector
+      };
     }
 
     function findHeadingByText(targets) {
@@ -1428,7 +1623,7 @@
 
       for (const element of headings) {
         const text = cleanText(element.innerText || element.textContent || "").toLowerCase();
-        if (!text || text.length > 80) {
+        if (!text || text.length > 220) {
           continue;
         }
 
@@ -1436,7 +1631,15 @@
           continue;
         }
 
-        if (targets.some((target) => text === target || text.startsWith(`${target} `))) {
+        if (
+          targets.some((target) => {
+            if (text === target || text.startsWith(`${target} `)) {
+              return true;
+            }
+
+            return text.includes(target) && text.length <= 140;
+          })
+        ) {
           matches.push(element);
         }
       }
@@ -1507,20 +1710,36 @@
         "people you can reach out to",
         "meet the hiring team",
         "about the company",
+        "job search faster with premium",
         "get personalized tips to stand out to hirers",
         "interested in working with us in the future",
         "commitments",
         "reactivate premium",
         "your profile and resume match",
-        "did you finish applying"
+        "did you finish applying",
+        "how promoted jobs are ranked"
       ];
 
       const trimmedLower = trimmed.toLowerCase();
       let stopIndex = trimmed.length;
+      const roleSignals = [
+        "about the role",
+        "responsibilities",
+        "requirements",
+        "qualifications",
+        "what you'll do",
+        "what you will do",
+        "position summary",
+        "job summary"
+      ];
 
       for (const marker of stopMarkers) {
-        const markerIndex = trimmedLower.indexOf(marker, "about the job".length);
-        if (markerIndex !== -1) {
+        const indexes = findAllMarkerIndexes(trimmedLower, marker, "about the job".length);
+        for (const markerIndex of indexes) {
+          if (!shouldStopLinkedInText(trimmedLower, marker, markerIndex, roleSignals, stopIndex)) {
+            continue;
+          }
+
           stopIndex = Math.min(stopIndex, markerIndex);
         }
       }
@@ -1532,6 +1751,53 @@
       }
 
       return trimmed;
+    }
+
+    function findAllMarkerIndexes(text, marker, fromIndex) {
+      const indexes = [];
+      let searchIndex = Math.max(0, fromIndex || 0);
+
+      while (searchIndex < text.length) {
+        const foundIndex = text.indexOf(marker, searchIndex);
+        if (foundIndex === -1) {
+          break;
+        }
+
+        indexes.push(foundIndex);
+        searchIndex = foundIndex + marker.length;
+      }
+
+      return indexes;
+    }
+
+    function shouldStopLinkedInText(text, marker, markerIndex, roleSignals, currentStopIndex) {
+      if (marker === "about the company") {
+        const hasRoleSignalAfter = roleSignals.some((signal) => {
+          const signalIndex = text.indexOf(signal, markerIndex + marker.length);
+          return signalIndex !== -1 && signalIndex < currentStopIndex;
+        });
+
+        if (hasRoleSignalAfter) {
+          return false;
+        }
+
+        if (markerIndex < 220) {
+          return false;
+        }
+
+        return true;
+      }
+
+      const hasRoleSignalBefore = roleSignals.some((signal) => {
+        const signalIndex = text.indexOf(signal);
+        return signalIndex !== -1 && signalIndex < markerIndex;
+      });
+
+      if (markerIndex < 180 && !hasRoleSignalBefore) {
+        return false;
+      }
+
+      return true;
     }
 
     function startsWithCompanySection(text) {
