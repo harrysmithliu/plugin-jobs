@@ -356,6 +356,13 @@
         font-size: 12px;
       }
 
+      .header-credit {
+        margin: 4px 0 0;
+        color: #94a3b8;
+        font-size: 11px;
+        letter-spacing: 0.01em;
+      }
+
       .header-actions {
         display: flex;
         align-items: center;
@@ -671,6 +678,7 @@
         <div class="header-title">
           <h1>JD Keyword Analyzer</h1>
           <p>Drag this window, resize from the corner, or maximize it</p>
+          <p class="header-credit">Developed by harrysmithliu</p>
         </div>
         <div class="header-actions">
           <button id="analyzeButton" class="primary-button">Analyze JD</button>

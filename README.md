@@ -13,6 +13,10 @@ This folder now contains a first-pass Chrome extension MVP for analyzing job des
 - Shows a score, signal level, and supporting sentence snippets for each keyword
 - Restores cached analysis automatically when you reopen the same job page
 
+## Screenshot
+
+![JD Keyword Analyzer Screenshot](assets/screenshot/1.png)
+
 ## Files
 
 - `manifest.json`: Chrome MV3 entrypoint

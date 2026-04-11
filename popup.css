@@ -28,6 +28,13 @@ body {
   color: #6b7280;
 }
 
+.credit {
+  margin: 6px 0 0;
+  color: #94a3b8;
+  font-size: 11px;
+  letter-spacing: 0.01em;
+}
+
 .controls {
   margin-top: 16px;
 }
