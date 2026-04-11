@@ -15,7 +15,17 @@ This folder now contains a first-pass Chrome extension MVP for analyzing job des
 
 ## Screenshot
 
-![JD Keyword Analyzer Screenshot](assets/screenshot/1.png)
+### 1. Floating JD Analyzer
+
+![Floating JD Analyzer](assets/screenshot/1.png)
+
+This floating panel runs directly on LinkedIn/Indeed job pages. It extracts JD text, computes keyword scores, shows color-zone breakdown, and presents matched JD snippets for quick apply/no-apply decisions.
+
+### 2. Popup Launcher + Form Memory
+
+![Popup Launcher and Form Memory](assets/screenshot/2.png)
+
+This popup panel is the control center: launch the floating analyzer, toggle form autofill memory, review saved field-key cache, and export recent cached JD analysis JSON for reuse or tuning.
 
 ## Files
 
