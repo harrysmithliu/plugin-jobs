@@ -872,8 +872,17 @@
     resultsList.replaceChildren();
 
     const orderedResults = sortResultsForDisplay(analysis.results);
+    const visibleResults = orderedResults.filter((item) => item.score > 0);
 
-    for (const item of orderedResults) {
+    if (visibleResults.length === 0) {
+      const empty = document.createElement("p");
+      empty.className = "snippet-empty";
+      empty.textContent = "No keyword scores above 0% for this JD.";
+      resultsList.appendChild(empty);
+      return;
+    }
+
+    for (const item of visibleResults) {
       const colorGroup = getColorGroup(item.name);
       const card = document.createElement("article");
       card.className = `result-card result-card--${colorGroup}`;

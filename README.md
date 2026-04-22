@@ -42,7 +42,7 @@ This popup panel is the control center: launch the floating analyzer, toggle for
 2. Enable `Developer mode`
 3. Click `Load unpacked`
 4. Select this folder:
-   `/Users/harryliu/Documents/workspace/portfolio/pj-tool-jobs/plugin-jobs`
+   `./`
 
 ## How to use it
 
