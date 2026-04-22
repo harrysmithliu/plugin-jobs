@@ -215,6 +215,17 @@
     }
   ];
 
+  const COLOR_OPTIONS = ["green", "yellow", "orange", "red"];
+  const DEFAULT_COLOR_WEIGHTS = {
+    green: 1,
+    yellow: 0.9,
+    orange: 0.8,
+    red: 0.7
+  };
+  const SETTINGS_STORAGE_KEY = "analyzerSettings";
+  const ALL_KEYWORD_NAMES = buildAllKeywordNames();
+  const DEFAULT_KEYWORD_COLOR_BY_NAME = buildDefaultKeywordColorByName();
+
   const REQUIRED_HINTS = [
     "must",
     "required",
@@ -408,6 +419,12 @@
         flex: 1;
         overflow: auto;
         padding: 14px;
+      }
+
+      .body--settings {
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
       }
 
       .status-block,
@@ -658,6 +675,97 @@
         line-height: 1.45;
       }
 
+      .settings-panel {
+        margin-bottom: 14px;
+        border: 1px solid #dde3e8;
+        border-radius: 12px;
+        background: #ffffff;
+        padding: 12px;
+      }
+
+      .settings-panel--active {
+        margin-bottom: 0;
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+      }
+
+      .settings-panel h2 {
+        margin: 0;
+        font-size: 15px;
+      }
+
+      .settings-header {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 10px;
+      }
+
+      .settings-subtle {
+        margin: 6px 0 0;
+        color: #64748b;
+        font-size: 12px;
+      }
+
+      .settings-actions {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+        flex-shrink: 0;
+      }
+
+      .settings-list {
+        margin-top: 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        max-height: 320px;
+        overflow: auto;
+        border-top: 1px solid #edf2f7;
+        padding-top: 10px;
+      }
+
+      .settings-panel--active .settings-list {
+        flex: 1;
+        min-height: 0;
+        max-height: none;
+      }
+
+      .settings-item {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 132px;
+        gap: 10px;
+        align-items: center;
+        border: 1px solid #e5e7eb;
+        border-radius: 10px;
+        padding: 8px 10px;
+        background: #fafafa;
+      }
+
+      .settings-item-name {
+        font-weight: 600;
+        line-height: 1.25;
+      }
+
+      .settings-item-group {
+        margin-top: 2px;
+        color: #64748b;
+        font-size: 12px;
+      }
+
+      .settings-select {
+        width: 100%;
+        border: 1px solid #cbd5e1;
+        border-radius: 8px;
+        padding: 7px 8px;
+        background: #ffffff;
+        color: #0f172a;
+        font: inherit;
+      }
+
       @media (max-width: 720px) {
         .summary-grid {
           grid-template-columns: 1fr;
@@ -682,6 +790,7 @@
         </div>
         <div class="header-actions">
           <button id="analyzeButton" class="primary-button">Analyze JD</button>
+          <button id="settingsButton">Settings</button>
           <button id="toggleRawButton" hidden>Show Raw Text</button>
           <button id="maximizeButton" class="icon-button" title="Toggle fullscreen">[]</button>
           <button id="closeButton" class="icon-button" title="Close">X</button>
@@ -731,6 +840,22 @@
           <div id="colorSummaryList" class="color-summary-list"></div>
         </section>
 
+        <section id="settingsSection" class="settings-panel" hidden>
+          <div class="settings-header">
+            <div>
+              <h2>Keyword Color Settings</h2>
+              <p class="settings-subtle">
+                Change zone per keyword; scores refresh instantly. Weights: Green 1.00, Yellow 0.90, Orange 0.80, Other 0.70
+              </p>
+            </div>
+            <div class="settings-actions">
+              <button id="resetSettingsButton">Reset Defaults</button>
+              <button id="closeSettingsButton">Done</button>
+            </div>
+          </div>
+          <div id="settingsList" class="settings-list"></div>
+        </section>
+
         <section id="resultsSection" class="results" hidden>
           <h2>Keyword Scores</h2>
           <div id="resultsList" class="results-list"></div>
@@ -745,14 +870,21 @@
   `;
 
   const analyzeButton = shadow.getElementById("analyzeButton");
+  const settingsButton = shadow.getElementById("settingsButton");
   const toggleRawButton = shadow.getElementById("toggleRawButton");
   const maximizeButton = shadow.getElementById("maximizeButton");
   const closeButton = shadow.getElementById("closeButton");
   const dragHandle = shadow.getElementById("dragHandle");
   const statusElement = shadow.getElementById("status");
+  const bodyElement = shadow.querySelector(".body");
+  const statusSection = shadow.querySelector(".status-block");
   const summarySection = shadow.getElementById("summarySection");
   const colorSummarySection = shadow.getElementById("colorSummarySection");
   const colorSummaryList = shadow.getElementById("colorSummaryList");
+  const settingsSection = shadow.getElementById("settingsSection");
+  const settingsList = shadow.getElementById("settingsList");
+  const resetSettingsButton = shadow.getElementById("resetSettingsButton");
+  const closeSettingsButton = shadow.getElementById("closeSettingsButton");
   const resultsSection = shadow.getElementById("resultsSection");
   const rawSection = shadow.getElementById("rawSection");
   const resultsList = shadow.getElementById("resultsList");
@@ -766,9 +898,16 @@
   const historyStatusElement = shadow.getElementById("historyStatus");
 
   let isRawVisible = false;
+  let isSettingsVisible = false;
+  let hasAnalysisResult = false;
   let isMaximized = false;
   let restoreRect = null;
   let dragState = null;
+  let keywordColorByName = { ...DEFAULT_KEYWORD_COLOR_BY_NAME };
+  let draftKeywordColorByName = null;
+  let hasPendingSettingsChanges = false;
+  let colorWeights = { ...DEFAULT_COLOR_WEIGHTS };
+  let latestExtraction = null;
 
   host.addEventListener("jd-analyzer-focus", () => {
     host.style.zIndex = "2147483647";
@@ -776,6 +915,31 @@
 
   analyzeButton.addEventListener("click", () => {
     analyzeCurrentPage();
+  });
+
+  settingsButton.addEventListener("click", () => {
+    if (!isSettingsVisible) {
+      beginSettingsEdit();
+      isSettingsVisible = true;
+    } else {
+      // Close without applying draft changes.
+      isSettingsVisible = false;
+      discardSettingsDraft();
+    }
+    applySettingsVisibility();
+  });
+
+  closeSettingsButton.addEventListener("click", async () => {
+    await applySettingsDraft();
+    isSettingsVisible = false;
+    discardSettingsDraft();
+    applySettingsVisibility();
+  });
+
+  resetSettingsButton.addEventListener("click", () => {
+    draftKeywordColorByName = { ...DEFAULT_KEYWORD_COLOR_BY_NAME };
+    hasPendingSettingsChanges = true;
+    renderSettingsList();
   });
 
   toggleRawButton.addEventListener("click", () => {
@@ -791,7 +955,14 @@
   window.addEventListener("mousemove", onDrag);
   window.addEventListener("mouseup", stopDrag);
 
-  analyzeCurrentPage();
+  initializeOverlay();
+
+  async function initializeOverlay() {
+    await loadAnalyzerSettings();
+    renderSettingsList();
+    applySettingsVisibility();
+    analyzeCurrentPage();
+  }
 
   async function analyzeCurrentPage() {
     setLoading(true);
@@ -815,7 +986,8 @@
         extraction,
         analysis,
         meta,
-        history
+        history,
+        settingsHash: computeSettingsHash()
       };
 
       renderResult(cacheEntry, false);
@@ -831,7 +1003,22 @@
       if (cached) {
         const extraction = cached.extraction || { url: cached.url || window.location.href, jobText: "" };
         const history = await detectAnalysisHistory(extraction, cached.meta);
-        renderResult({ ...cached, history }, true);
+        const hasExtractionText = Boolean(extraction?.jobText);
+        const needsRecompute = cached.settingsHash !== computeSettingsHash();
+        if (hasExtractionText && needsRecompute) {
+          const recalculated = {
+            ...cached,
+            extractedAt: new Date().toISOString(),
+            meta: buildCacheEntryMeta(extraction),
+            analysis: analyzeJobText(extraction.jobText),
+            history,
+            settingsHash: computeSettingsHash()
+          };
+          renderResult(recalculated, true);
+          await saveCachedAnalysis(recalculated);
+        } else {
+          renderResult({ ...cached, history }, true);
+        }
         setStatus(
           `Live extraction failed, showing cached analysis instead. ${error.message || ""}`.trim(),
           true
@@ -846,6 +1033,8 @@
 
   function renderResult(cacheEntry, fromCache) {
     const { extraction, analysis, extractedAt, history } = cacheEntry;
+    latestExtraction = extraction;
+    hasAnalysisResult = true;
 
     setStatus(
       fromCache
@@ -934,9 +1123,12 @@
 
       resultsList.appendChild(card);
     }
+
+    applySettingsVisibility();
   }
 
   function hideResults() {
+    hasAnalysisResult = false;
     summarySection.hidden = true;
     colorSummarySection.hidden = true;
     resultsSection.hidden = true;
@@ -944,6 +1136,7 @@
     toggleRawButton.hidden = true;
     colorSummaryList.replaceChildren();
     resultsList.replaceChildren();
+    applySettingsVisibility();
   }
 
   function renderColorSummary(results) {
@@ -1191,19 +1384,7 @@
   }
 
   function getColorGroup(keywordName) {
-    if (KEYWORD_COLOR_GROUPS.green.has(keywordName)) {
-      return "green";
-    }
-
-    if (KEYWORD_COLOR_GROUPS.yellow.has(keywordName)) {
-      return "yellow";
-    }
-
-    if (KEYWORD_COLOR_GROUPS.orange.has(keywordName)) {
-      return "orange";
-    }
-
-    return "red";
+    return COLOR_OPTIONS.includes(keywordColorByName[keywordName]) ? keywordColorByName[keywordName] : "red";
   }
 
   function colorRank(color) {
@@ -1231,6 +1412,293 @@
 
     historyStatusElement.textContent =
       matchedBy.length > 0 ? `Seen before (${matchedBy.join(" + ")})` : "Seen before";
+  }
+
+  function applySettingsVisibility() {
+    settingsSection.hidden = !isSettingsVisible;
+    settingsButton.textContent = isSettingsVisible ? "Hide Settings" : "Settings";
+    bodyElement.classList.toggle("body--settings", isSettingsVisible);
+    settingsSection.classList.toggle("settings-panel--active", isSettingsVisible);
+
+    if (isSettingsVisible) {
+      statusSection.hidden = true;
+      summarySection.hidden = true;
+      colorSummarySection.hidden = true;
+      resultsSection.hidden = true;
+      rawSection.hidden = true;
+      toggleRawButton.hidden = true;
+      return;
+    }
+
+    statusSection.hidden = false;
+    summarySection.hidden = !hasAnalysisResult;
+    colorSummarySection.hidden = !hasAnalysisResult;
+    resultsSection.hidden = !hasAnalysisResult;
+    toggleRawButton.hidden = !hasAnalysisResult;
+    rawSection.hidden = !(hasAnalysisResult && isRawVisible);
+  }
+
+  function beginSettingsEdit() {
+    draftKeywordColorByName = { ...keywordColorByName };
+    hasPendingSettingsChanges = false;
+    renderSettingsList();
+  }
+
+  function discardSettingsDraft() {
+    draftKeywordColorByName = null;
+    hasPendingSettingsChanges = false;
+  }
+
+  async function applySettingsDraft() {
+    if (!draftKeywordColorByName || !hasPendingSettingsChanges) {
+      return;
+    }
+
+    keywordColorByName = { ...draftKeywordColorByName };
+    await saveAnalyzerSettings();
+    await rerunAnalysisWithCurrentSettings();
+  }
+
+  async function loadAnalyzerSettings() {
+    try {
+      const stored = await chrome.storage.local.get({ [SETTINGS_STORAGE_KEY]: null });
+      const settings = stored[SETTINGS_STORAGE_KEY];
+      if (!settings) {
+        return;
+      }
+
+      const normalizedColors = { ...DEFAULT_KEYWORD_COLOR_BY_NAME };
+      for (const keyword of ALL_KEYWORD_NAMES) {
+        const candidate = normalizeColor(settings?.keywordColorByName?.[keyword]);
+        if (candidate) {
+          normalizedColors[keyword] = candidate;
+        }
+      }
+
+      const normalizedWeights = { ...DEFAULT_COLOR_WEIGHTS };
+      for (const color of COLOR_OPTIONS) {
+        const rawWeight = Number(settings?.colorWeights?.[color]);
+        if (Number.isFinite(rawWeight) && rawWeight > 0) {
+          normalizedWeights[color] = clamp(rawWeight, 0.4, 1.6);
+        }
+      }
+
+      keywordColorByName = normalizedColors;
+      colorWeights = normalizedWeights;
+    } catch (error) {
+      if (isExtensionContextInvalidated(error)) {
+        return;
+      }
+      throw error;
+    }
+  }
+
+  async function saveAnalyzerSettings() {
+    try {
+      await chrome.storage.local.set({
+        [SETTINGS_STORAGE_KEY]: {
+          keywordColorByName,
+          colorWeights,
+          updatedAt: new Date().toISOString()
+        }
+      });
+    } catch (error) {
+      if (isExtensionContextInvalidated(error)) {
+        return;
+      }
+      throw error;
+    }
+  }
+
+  function renderSettingsList() {
+    settingsList.replaceChildren();
+
+    const keywordToGroup = buildKeywordToGroupMap();
+    const orderedKeywords = getKeywordNamesForSettings();
+
+    for (const keyword of orderedKeywords) {
+      const item = document.createElement("div");
+      item.className = "settings-item";
+
+      const info = document.createElement("div");
+      const name = document.createElement("div");
+      name.className = "settings-item-name";
+      name.textContent = keyword;
+
+      const group = document.createElement("div");
+      group.className = "settings-item-group";
+      group.textContent = keywordToGroup.get(keyword) || "Other";
+
+      info.append(name, group);
+
+      const select = document.createElement("select");
+      select.className = "settings-select";
+
+      for (const color of COLOR_OPTIONS) {
+        const option = document.createElement("option");
+        option.value = color;
+        option.textContent = COLOR_LABELS[color];
+        select.appendChild(option);
+      }
+
+      select.value = getEditableColorGroup(keyword);
+
+      select.addEventListener("change", () => {
+        const nextColor = normalizeColor(select.value) || "red";
+        if (!draftKeywordColorByName) {
+          draftKeywordColorByName = { ...keywordColorByName };
+        }
+        draftKeywordColorByName[keyword] = nextColor;
+        hasPendingSettingsChanges = true;
+      });
+
+      item.append(info, select);
+      settingsList.appendChild(item);
+    }
+  }
+
+  async function rerunAnalysisWithCurrentSettings() {
+    if (!latestExtraction?.jobText) {
+      setStatus("Settings saved. Click Analyze JD to refresh this page.");
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const analysis = analyzeJobText(latestExtraction.jobText);
+      const meta = buildCacheEntryMeta(latestExtraction);
+      const history = await detectAnalysisHistory(latestExtraction, meta);
+      const entry = {
+        url: latestExtraction.url || window.location.href,
+        hostname: latestExtraction.hostname || window.location.hostname,
+        title: latestExtraction.pageTitle || document.title,
+        extractedAt: new Date().toISOString(),
+        extraction: latestExtraction,
+        analysis,
+        meta,
+        history,
+        settingsHash: computeSettingsHash()
+      };
+
+      renderResult(entry, false);
+      setStatus("Scores refreshed using updated keyword color settings.");
+      await saveCachedAnalysis(entry);
+    } catch (error) {
+      if (isExtensionContextInvalidated(error)) {
+        setStatus("This floating window belongs to an older extension version. Close and reopen it.", true);
+        return;
+      }
+
+      setStatus(error?.message || "Failed to refresh scores with current settings.", true);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function normalizeColor(value) {
+    const normalized = String(value || "").trim().toLowerCase();
+    return COLOR_OPTIONS.includes(normalized) ? normalized : null;
+  }
+
+  function getEditableColorGroup(keywordName) {
+    if (draftKeywordColorByName && COLOR_OPTIONS.includes(draftKeywordColorByName[keywordName])) {
+      return draftKeywordColorByName[keywordName];
+    }
+
+    return getColorGroup(keywordName);
+  }
+
+  function computeSettingsHash() {
+    const payload = {
+      colorWeights: COLOR_OPTIONS.reduce((acc, color) => {
+        acc[color] = Number(colorWeights[color] || DEFAULT_COLOR_WEIGHTS[color] || 1);
+        return acc;
+      }, {}),
+      keywordColorByName: ALL_KEYWORD_NAMES.reduce((acc, keyword) => {
+        acc[keyword] = getColorGroup(keyword);
+        return acc;
+      }, {})
+    };
+
+    const serialized = JSON.stringify(payload);
+    let hash = 2166136261;
+
+    for (let index = 0; index < serialized.length; index += 1) {
+      hash ^= serialized.charCodeAt(index);
+      hash = Math.imul(hash, 16777619);
+    }
+
+    return `settings-${(hash >>> 0).toString(16)}`;
+  }
+
+  function buildAllKeywordNames() {
+    const names = [];
+    const seen = new Set();
+
+    for (const group of KEYWORD_GROUPS) {
+      for (const item of group.items) {
+        if (seen.has(item.name)) {
+          continue;
+        }
+
+        seen.add(item.name);
+        names.push(item.name);
+      }
+    }
+
+    return names;
+  }
+
+  function buildDefaultKeywordColorByName() {
+    const mapping = {};
+
+    for (const keyword of ALL_KEYWORD_NAMES) {
+      if (KEYWORD_COLOR_GROUPS.green.has(keyword)) {
+        mapping[keyword] = "green";
+        continue;
+      }
+
+      if (KEYWORD_COLOR_GROUPS.yellow.has(keyword)) {
+        mapping[keyword] = "yellow";
+        continue;
+      }
+
+      if (KEYWORD_COLOR_GROUPS.orange.has(keyword)) {
+        mapping[keyword] = "orange";
+        continue;
+      }
+
+      mapping[keyword] = "red";
+    }
+
+    return mapping;
+  }
+
+  function buildKeywordToGroupMap() {
+    const map = new Map();
+    for (const group of KEYWORD_GROUPS) {
+      for (const item of group.items) {
+        if (!map.has(item.name)) {
+          map.set(item.name, group.group);
+        }
+      }
+    }
+    return map;
+  }
+
+  function getKeywordNamesForSettings() {
+    const displayOrder = new Map(KEYWORD_DISPLAY_ORDER.map((name, index) => [name, index]));
+
+    return [...ALL_KEYWORD_NAMES].sort((left, right) => {
+      const leftOrder = displayOrder.has(left) ? displayOrder.get(left) : Number.MAX_SAFE_INTEGER;
+      const rightOrder = displayOrder.has(right) ? displayOrder.get(right) : Number.MAX_SAFE_INTEGER;
+
+      if (leftOrder !== rightOrder) {
+        return leftOrder - rightOrder;
+      }
+
+      return left.localeCompare(right);
+    });
   }
 
   async function saveCachedAnalysis(entry) {
@@ -1989,11 +2457,13 @@
           continue;
         }
 
-        const score = calculateScore(matches);
+        const rawScore = calculateScore(matches);
+        const score = applyColorWeight(rawScore, getColorGroup(item.name));
 
         results.push({
           group: group.group,
           name: item.name,
+          rawScore,
           score,
           signal: scoreToSignal(score),
           snippets: unique(matches.map((match) => match.sentence)).slice(0, 3),
@@ -2019,6 +2489,7 @@
     return {
       group,
       name,
+      rawScore: 0,
       score: 0,
       signal: "No signal",
       snippets: [],
@@ -2258,6 +2729,11 @@
     }
 
     return clamp(bestScore, 0, 100);
+  }
+
+  function applyColorWeight(score, colorGroup) {
+    const weight = Number(colorWeights[colorGroup] || DEFAULT_COLOR_WEIGHTS[colorGroup] || 1);
+    return clamp(Math.round(score * weight), 0, 100);
   }
 
   function summarizeReasons(matches) {
