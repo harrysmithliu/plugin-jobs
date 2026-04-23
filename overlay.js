@@ -215,6 +215,30 @@
     }
   ];
 
+  const VECTOR_DB_KEYWORD = KEYWORD_GROUPS.flatMap((group) => group.items).find((item) => item.name === "Vector DB") || null;
+  const BACKEND_KEYWORD_GROUPS = KEYWORD_GROUPS.filter((group) => group.group !== "AI & LLM")
+    .map((group) => ({
+      ...group,
+      items: group.items.filter((item) => item.name !== "Vector DB")
+    }))
+    .filter((group) => group.items.length > 0);
+  const AGENTICSYS_KEYWORD_GROUPS = KEYWORD_GROUPS.filter((group) => group.group === "AI & LLM").map((group) => ({
+    ...group,
+    items: [...group.items]
+  }));
+  if (VECTOR_DB_KEYWORD) {
+    AGENTICSYS_KEYWORD_GROUPS.push({
+      group: "Data",
+      items: [
+        {
+          ...VECTOR_DB_KEYWORD,
+          aliases: [...VECTOR_DB_KEYWORD.aliases]
+        }
+      ]
+    });
+  }
+  const AGENTICSYS_KEYWORD_DISPLAY_ORDER = buildAllKeywordNamesFromGroups(AGENTICSYS_KEYWORD_GROUPS);
+
   const COLOR_OPTIONS = ["green", "yellow", "orange", "red"];
   const DEFAULT_COLOR_WEIGHTS = {
     green: 1,
@@ -222,9 +246,20 @@
     orange: 0.8,
     red: 0.7
   };
+  const DEFAULT_PROFILE_ID = "backend";
+  const PROFILE_ORDER = ["backend", "agenticsys", "appsec"];
+  const PROFILE_LABELS = {
+    backend: "Backend",
+    agenticsys: "AgenticSys",
+    appsec: "AppSec"
+  };
+  const PROFILE_DEFINITIONS = buildProfileDefinitions();
   const SETTINGS_STORAGE_KEY = "analyzerSettings";
-  const ALL_KEYWORD_NAMES = buildAllKeywordNames();
-  const DEFAULT_KEYWORD_COLOR_BY_NAME = buildDefaultKeywordColorByName();
+  const MAX_ANALYSIS_TEXT_LENGTH = 20000;
+  const MAX_FALLBACK_SCAN_NODES = 140;
+  const MAX_HEADING_FALLBACK_NODES = 220;
+  const MAX_LINKEDIN_CONTAINER_SCAN = 180;
+  const aliasRegexCache = new Map();
 
   const REQUIRED_HINTS = [
     "must",
@@ -685,7 +720,7 @@
 
       .settings-panel--active {
         margin-bottom: 0;
-        height: 100%;
+        flex: 1;
         display: flex;
         flex-direction: column;
         min-height: 0;
@@ -717,6 +752,30 @@
         flex-shrink: 0;
       }
 
+      .settings-tabs {
+        margin-top: 10px;
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+
+      .settings-tab {
+        border: 1px solid #cbd5e1;
+        border-radius: 999px;
+        padding: 6px 12px;
+        background: #ffffff;
+        color: #0f172a;
+        font-size: 12px;
+        font-weight: 700;
+        cursor: pointer;
+      }
+
+      .settings-tab--active {
+        background: #0f172a;
+        border-color: #0f172a;
+        color: #ffffff;
+      }
+
       .settings-list {
         margin-top: 12px;
         display: flex;
@@ -732,6 +791,7 @@
         flex: 1;
         min-height: 0;
         max-height: none;
+        overflow: auto;
       }
 
       .settings-item {
@@ -844,9 +904,10 @@
           <div class="settings-header">
             <div>
               <h2>Keyword Color Settings</h2>
-              <p class="settings-subtle">
-                Change zone per keyword; scores refresh instantly. Weights: Green 1.00, Yellow 0.90, Orange 0.80, Other 0.70
+              <p id="settingsSubtle" class="settings-subtle">
+                Change zone per keyword; changes apply when you click Done. Weights: Green 1.00, Yellow 0.90, Orange 0.80, Other 0.70
               </p>
+              <div id="settingsTabs" class="settings-tabs"></div>
             </div>
             <div class="settings-actions">
               <button id="resetSettingsButton">Reset Defaults</button>
@@ -882,6 +943,8 @@
   const colorSummarySection = shadow.getElementById("colorSummarySection");
   const colorSummaryList = shadow.getElementById("colorSummaryList");
   const settingsSection = shadow.getElementById("settingsSection");
+  const settingsSubtle = shadow.getElementById("settingsSubtle");
+  const settingsTabs = shadow.getElementById("settingsTabs");
   const settingsList = shadow.getElementById("settingsList");
   const resetSettingsButton = shadow.getElementById("resetSettingsButton");
   const closeSettingsButton = shadow.getElementById("closeSettingsButton");
@@ -903,10 +966,11 @@
   let isMaximized = false;
   let restoreRect = null;
   let dragState = null;
-  let keywordColorByName = { ...DEFAULT_KEYWORD_COLOR_BY_NAME };
-  let draftKeywordColorByName = null;
+  let activeProfileId = DEFAULT_PROFILE_ID;
+  let profileSettingsById = buildDefaultProfileSettingsById();
+  let draftProfileSettingsById = null;
+  let draftActiveProfileId = DEFAULT_PROFILE_ID;
   let hasPendingSettingsChanges = false;
-  let colorWeights = { ...DEFAULT_COLOR_WEIGHTS };
   let latestExtraction = null;
 
   host.addEventListener("jd-analyzer-focus", () => {
@@ -937,8 +1001,11 @@
   });
 
   resetSettingsButton.addEventListener("click", () => {
-    draftKeywordColorByName = { ...DEFAULT_KEYWORD_COLOR_BY_NAME };
+    const currentProfileId = getDraftActiveProfileId();
+    ensureDraftProfileSettings(currentProfileId);
+    draftProfileSettingsById[currentProfileId] = createDefaultProfileSettings(currentProfileId);
     hasPendingSettingsChanges = true;
+    renderSettingsTabs();
     renderSettingsList();
   });
 
@@ -959,6 +1026,7 @@
 
   async function initializeOverlay() {
     await loadAnalyzerSettings();
+    renderSettingsTabs();
     renderSettingsList();
     applySettingsVisibility();
     analyzeCurrentPage();
@@ -1226,7 +1294,8 @@
   }
 
   function getAliasesForKeyword(keywordName) {
-    for (const group of KEYWORD_GROUPS) {
+    const activeKeywordGroups = getProfileDefinition(activeProfileId).keywordGroups;
+    for (const group of activeKeywordGroups) {
       const item = group.items.find((entry) => entry.name === keywordName);
       if (item) {
         return [item.name, ...item.aliases];
@@ -1359,7 +1428,7 @@
   }
 
   function sortResultsForDisplay(results) {
-    const displayOrder = new Map(KEYWORD_DISPLAY_ORDER.map((name, index) => [name, index]));
+    const displayOrder = new Map((getProfileDefinition(activeProfileId).keywordDisplayOrder || []).map((name, index) => [name, index]));
 
     return [...results].sort((left, right) => {
       const leftIndex = displayOrder.has(left.name) ? displayOrder.get(left.name) : Number.MAX_SAFE_INTEGER;
@@ -1383,8 +1452,10 @@
     });
   }
 
-  function getColorGroup(keywordName) {
-    return COLOR_OPTIONS.includes(keywordColorByName[keywordName]) ? keywordColorByName[keywordName] : "red";
+  function getColorGroup(keywordName, profileId = activeProfileId, settingsOverride = null) {
+    const settings = settingsOverride || getLiveProfileSettings(profileId);
+    const color = settings?.keywordColorByName?.[keywordName];
+    return COLOR_OPTIONS.includes(color) ? color : "red";
   }
 
   function colorRank(color) {
@@ -1439,22 +1510,26 @@
   }
 
   function beginSettingsEdit() {
-    draftKeywordColorByName = { ...keywordColorByName };
+    draftProfileSettingsById = cloneProfileSettingsById(profileSettingsById);
+    draftActiveProfileId = activeProfileId;
     hasPendingSettingsChanges = false;
+    renderSettingsTabs();
     renderSettingsList();
   }
 
   function discardSettingsDraft() {
-    draftKeywordColorByName = null;
+    draftProfileSettingsById = null;
+    draftActiveProfileId = activeProfileId;
     hasPendingSettingsChanges = false;
   }
 
   async function applySettingsDraft() {
-    if (!draftKeywordColorByName || !hasPendingSettingsChanges) {
+    if (!draftProfileSettingsById || !hasPendingSettingsChanges) {
       return;
     }
 
-    keywordColorByName = { ...draftKeywordColorByName };
+    profileSettingsById = cloneProfileSettingsById(draftProfileSettingsById);
+    activeProfileId = normalizeProfileId(draftActiveProfileId) || DEFAULT_PROFILE_ID;
     await saveAnalyzerSettings();
     await rerunAnalysisWithCurrentSettings();
   }
@@ -1462,29 +1537,30 @@
   async function loadAnalyzerSettings() {
     try {
       const stored = await chrome.storage.local.get({ [SETTINGS_STORAGE_KEY]: null });
-      const settings = stored[SETTINGS_STORAGE_KEY];
-      if (!settings) {
+      const raw = stored[SETTINGS_STORAGE_KEY];
+      if (!raw) {
         return;
       }
 
-      const normalizedColors = { ...DEFAULT_KEYWORD_COLOR_BY_NAME };
-      for (const keyword of ALL_KEYWORD_NAMES) {
-        const candidate = normalizeColor(settings?.keywordColorByName?.[keyword]);
-        if (candidate) {
-          normalizedColors[keyword] = candidate;
-        }
+      const defaults = buildDefaultProfileSettingsById();
+      const normalizedSettingsByProfile = cloneProfileSettingsById(defaults);
+
+      // Backward compatibility with old shape:
+      // { keywordColorByName, colorWeights }
+      if (raw.keywordColorByName || raw.colorWeights) {
+        normalizedSettingsByProfile.backend = normalizeSingleProfileSettings("backend", raw);
+        profileSettingsById = normalizedSettingsByProfile;
+        activeProfileId = DEFAULT_PROFILE_ID;
+        return;
       }
 
-      const normalizedWeights = { ...DEFAULT_COLOR_WEIGHTS };
-      for (const color of COLOR_OPTIONS) {
-        const rawWeight = Number(settings?.colorWeights?.[color]);
-        if (Number.isFinite(rawWeight) && rawWeight > 0) {
-          normalizedWeights[color] = clamp(rawWeight, 0.4, 1.6);
-        }
+      const inputByProfile = raw.settingsByProfile || {};
+      for (const profileId of PROFILE_ORDER) {
+        normalizedSettingsByProfile[profileId] = normalizeSingleProfileSettings(profileId, inputByProfile[profileId]);
       }
 
-      keywordColorByName = normalizedColors;
-      colorWeights = normalizedWeights;
+      profileSettingsById = normalizedSettingsByProfile;
+      activeProfileId = normalizeProfileId(raw.activeProfileId) || DEFAULT_PROFILE_ID;
     } catch (error) {
       if (isExtensionContextInvalidated(error)) {
         return;
@@ -1497,8 +1573,9 @@
     try {
       await chrome.storage.local.set({
         [SETTINGS_STORAGE_KEY]: {
-          keywordColorByName,
-          colorWeights,
+          version: 2,
+          activeProfileId,
+          settingsByProfile: profileSettingsById,
           updatedAt: new Date().toISOString()
         }
       });
@@ -1513,8 +1590,28 @@
   function renderSettingsList() {
     settingsList.replaceChildren();
 
-    const keywordToGroup = buildKeywordToGroupMap();
-    const orderedKeywords = getKeywordNamesForSettings();
+    const profileId = getDraftActiveProfileId();
+    const keywordToGroup = buildKeywordToGroupMap(profileId);
+    const orderedKeywords = getKeywordNamesForSettings(profileId);
+    const settingsForProfile = getEditableProfileSettings(profileId);
+    const keywordCount = orderedKeywords.length;
+
+    settingsSubtle.textContent =
+      keywordCount > 0
+        ? `${PROFILE_LABELS[profileId]} tab: ${keywordCount} keywords. Weights: Green ${formatWeight(
+            settingsForProfile.colorWeights.green
+          )}, Yellow ${formatWeight(settingsForProfile.colorWeights.yellow)}, Orange ${formatWeight(
+            settingsForProfile.colorWeights.orange
+          )}, Other ${formatWeight(settingsForProfile.colorWeights.red)}`
+        : `${PROFILE_LABELS[profileId]} tab is currently empty. Add keywords later to enable matching.`;
+
+    if (orderedKeywords.length === 0) {
+      const empty = document.createElement("p");
+      empty.className = "snippet-empty";
+      empty.textContent = "No keywords configured in this tab yet.";
+      settingsList.appendChild(empty);
+      return;
+    }
 
     for (const keyword of orderedKeywords) {
       const item = document.createElement("div");
@@ -1541,14 +1638,13 @@
         select.appendChild(option);
       }
 
-      select.value = getEditableColorGroup(keyword);
+      select.value = getColorGroup(keyword, profileId, settingsForProfile);
 
       select.addEventListener("change", () => {
         const nextColor = normalizeColor(select.value) || "red";
-        if (!draftKeywordColorByName) {
-          draftKeywordColorByName = { ...keywordColorByName };
-        }
-        draftKeywordColorByName[keyword] = nextColor;
+        const currentProfileId = getDraftActiveProfileId();
+        ensureDraftProfileSettings(currentProfileId);
+        draftProfileSettingsById[currentProfileId].keywordColorByName[keyword] = nextColor;
         hasPendingSettingsChanges = true;
       });
 
@@ -1557,9 +1653,32 @@
     }
   }
 
+  function renderSettingsTabs() {
+    settingsTabs.replaceChildren();
+
+    for (const profileId of PROFILE_ORDER) {
+      const tab = document.createElement("button");
+      tab.className = `settings-tab ${profileId === getDraftActiveProfileId() ? "settings-tab--active" : ""}`;
+      tab.type = "button";
+      tab.textContent = PROFILE_LABELS[profileId];
+      tab.addEventListener("click", () => {
+        if (profileId === getDraftActiveProfileId()) {
+          return;
+        }
+
+        draftActiveProfileId = profileId;
+        hasPendingSettingsChanges = true;
+        renderSettingsTabs();
+        renderSettingsList();
+      });
+
+      settingsTabs.appendChild(tab);
+    }
+  }
+
   async function rerunAnalysisWithCurrentSettings() {
     if (!latestExtraction?.jobText) {
-      setStatus("Settings saved. Click Analyze JD to refresh this page.");
+      setStatus(`Settings saved for ${PROFILE_LABELS[activeProfileId]}. Click Analyze JD to refresh this page.`);
       return;
     }
 
@@ -1581,7 +1700,7 @@
       };
 
       renderResult(entry, false);
-      setStatus("Scores refreshed using updated keyword color settings.");
+      setStatus(`Scores refreshed using ${PROFILE_LABELS[activeProfileId]} profile settings.`);
       await saveCachedAnalysis(entry);
     } catch (error) {
       if (isExtensionContextInvalidated(error)) {
@@ -1600,22 +1719,23 @@
     return COLOR_OPTIONS.includes(normalized) ? normalized : null;
   }
 
-  function getEditableColorGroup(keywordName) {
-    if (draftKeywordColorByName && COLOR_OPTIONS.includes(draftKeywordColorByName[keywordName])) {
-      return draftKeywordColorByName[keywordName];
-    }
-
-    return getColorGroup(keywordName);
-  }
-
   function computeSettingsHash() {
     const payload = {
-      colorWeights: COLOR_OPTIONS.reduce((acc, color) => {
-        acc[color] = Number(colorWeights[color] || DEFAULT_COLOR_WEIGHTS[color] || 1);
-        return acc;
-      }, {}),
-      keywordColorByName: ALL_KEYWORD_NAMES.reduce((acc, keyword) => {
-        acc[keyword] = getColorGroup(keyword);
+      activeProfileId,
+      settingsByProfile: PROFILE_ORDER.reduce((acc, profileId) => {
+        const settings = getLiveProfileSettings(profileId);
+        const keywords = getAllKeywordNamesForProfile(profileId);
+
+        acc[profileId] = {
+          colorWeights: COLOR_OPTIONS.reduce((weights, color) => {
+            weights[color] = Number(settings.colorWeights[color] || DEFAULT_COLOR_WEIGHTS[color] || 1);
+            return weights;
+          }, {}),
+          keywordColorByName: keywords.reduce((map, keyword) => {
+            map[keyword] = getColorGroup(keyword, profileId, settings);
+            return map;
+          }, {})
+        };
         return acc;
       }, {})
     };
@@ -1631,11 +1751,11 @@
     return `settings-${(hash >>> 0).toString(16)}`;
   }
 
-  function buildAllKeywordNames() {
+  function buildAllKeywordNamesFromGroups(keywordGroups) {
     const names = [];
     const seen = new Set();
 
-    for (const group of KEYWORD_GROUPS) {
+    for (const group of keywordGroups) {
       for (const item of group.items) {
         if (seen.has(item.name)) {
           continue;
@@ -1649,21 +1769,22 @@
     return names;
   }
 
-  function buildDefaultKeywordColorByName() {
+  function buildDefaultKeywordColorByName(profileDefinition) {
     const mapping = {};
+    const keywordNames = buildAllKeywordNamesFromGroups(profileDefinition.keywordGroups);
 
-    for (const keyword of ALL_KEYWORD_NAMES) {
-      if (KEYWORD_COLOR_GROUPS.green.has(keyword)) {
+    for (const keyword of keywordNames) {
+      if (profileDefinition.defaultColorGroups.green.has(keyword)) {
         mapping[keyword] = "green";
         continue;
       }
 
-      if (KEYWORD_COLOR_GROUPS.yellow.has(keyword)) {
+      if (profileDefinition.defaultColorGroups.yellow.has(keyword)) {
         mapping[keyword] = "yellow";
         continue;
       }
 
-      if (KEYWORD_COLOR_GROUPS.orange.has(keyword)) {
+      if (profileDefinition.defaultColorGroups.orange.has(keyword)) {
         mapping[keyword] = "orange";
         continue;
       }
@@ -1674,9 +1795,10 @@
     return mapping;
   }
 
-  function buildKeywordToGroupMap() {
+  function buildKeywordToGroupMap(profileId = activeProfileId) {
+    const definition = getProfileDefinition(profileId);
     const map = new Map();
-    for (const group of KEYWORD_GROUPS) {
+    for (const group of definition.keywordGroups) {
       for (const item of group.items) {
         if (!map.has(item.name)) {
           map.set(item.name, group.group);
@@ -1686,10 +1808,12 @@
     return map;
   }
 
-  function getKeywordNamesForSettings() {
-    const displayOrder = new Map(KEYWORD_DISPLAY_ORDER.map((name, index) => [name, index]));
+  function getKeywordNamesForSettings(profileId = activeProfileId) {
+    const definition = getProfileDefinition(profileId);
+    const allKeywordNames = getAllKeywordNamesForProfile(profileId);
+    const displayOrder = new Map((definition.keywordDisplayOrder || []).map((name, index) => [name, index]));
 
-    return [...ALL_KEYWORD_NAMES].sort((left, right) => {
+    return [...allKeywordNames].sort((left, right) => {
       const leftOrder = displayOrder.has(left) ? displayOrder.get(left) : Number.MAX_SAFE_INTEGER;
       const rightOrder = displayOrder.has(right) ? displayOrder.get(right) : Number.MAX_SAFE_INTEGER;
 
@@ -1699,6 +1823,143 @@
 
       return left.localeCompare(right);
     });
+  }
+
+  function buildProfileDefinitions() {
+    const backendDefinition = {
+      id: "backend",
+      label: PROFILE_LABELS.backend,
+      keywordGroups: BACKEND_KEYWORD_GROUPS,
+      keywordDisplayOrder: KEYWORD_DISPLAY_ORDER,
+      defaultColorGroups: KEYWORD_COLOR_GROUPS
+    };
+
+    const emptyColorGroups = {
+      green: new Set(),
+      yellow: new Set(),
+      orange: new Set()
+    };
+
+    return {
+      backend: backendDefinition,
+      agenticsys: {
+        id: "agenticsys",
+        label: PROFILE_LABELS.agenticsys,
+        keywordGroups: AGENTICSYS_KEYWORD_GROUPS,
+        keywordDisplayOrder: AGENTICSYS_KEYWORD_DISPLAY_ORDER,
+        defaultColorGroups: emptyColorGroups
+      },
+      appsec: {
+        id: "appsec",
+        label: PROFILE_LABELS.appsec,
+        keywordGroups: [],
+        keywordDisplayOrder: [],
+        defaultColorGroups: emptyColorGroups
+      }
+    };
+  }
+
+  function buildDefaultProfileSettingsById() {
+    const mapping = {};
+    for (const profileId of PROFILE_ORDER) {
+      mapping[profileId] = createDefaultProfileSettings(profileId);
+    }
+    return mapping;
+  }
+
+  function createDefaultProfileSettings(profileId) {
+    const definition = getProfileDefinition(profileId);
+    return {
+      keywordColorByName: buildDefaultKeywordColorByName(definition),
+      colorWeights: { ...DEFAULT_COLOR_WEIGHTS }
+    };
+  }
+
+  function getProfileDefinition(profileId) {
+    return PROFILE_DEFINITIONS[normalizeProfileId(profileId)] || PROFILE_DEFINITIONS[DEFAULT_PROFILE_ID];
+  }
+
+  function normalizeProfileId(profileId) {
+    const normalized = String(profileId || "").trim().toLowerCase();
+    return PROFILE_ORDER.includes(normalized) ? normalized : null;
+  }
+
+  function getAllKeywordNamesForProfile(profileId) {
+    return buildAllKeywordNamesFromGroups(getProfileDefinition(profileId).keywordGroups);
+  }
+
+  function cloneProfileSettingsById(source) {
+    const cloned = {};
+    for (const profileId of PROFILE_ORDER) {
+      const input = source?.[profileId];
+      cloned[profileId] = {
+        keywordColorByName: { ...(input?.keywordColorByName || {}) },
+        colorWeights: { ...(input?.colorWeights || {}) }
+      };
+    }
+    return cloned;
+  }
+
+  function normalizeSingleProfileSettings(profileId, rawSettings) {
+    const defaults = createDefaultProfileSettings(profileId);
+    const normalized = {
+      keywordColorByName: { ...defaults.keywordColorByName },
+      colorWeights: { ...defaults.colorWeights }
+    };
+
+    const keywords = getAllKeywordNamesForProfile(profileId);
+    for (const keyword of keywords) {
+      const candidate = normalizeColor(rawSettings?.keywordColorByName?.[keyword]);
+      if (candidate) {
+        normalized.keywordColorByName[keyword] = candidate;
+      }
+    }
+
+    for (const color of COLOR_OPTIONS) {
+      const rawWeight = Number(rawSettings?.colorWeights?.[color]);
+      if (Number.isFinite(rawWeight) && rawWeight > 0) {
+        normalized.colorWeights[color] = clamp(rawWeight, 0.4, 1.6);
+      }
+    }
+
+    return normalized;
+  }
+
+  function getDraftActiveProfileId() {
+    const normalized = normalizeProfileId(draftActiveProfileId);
+    return normalized || activeProfileId || DEFAULT_PROFILE_ID;
+  }
+
+  function ensureDraftProfileSettings(profileId) {
+    if (!draftProfileSettingsById) {
+      draftProfileSettingsById = cloneProfileSettingsById(profileSettingsById);
+    }
+
+    if (!draftProfileSettingsById[profileId]) {
+      draftProfileSettingsById[profileId] = createDefaultProfileSettings(profileId);
+    }
+  }
+
+  function getEditableProfileSettings(profileId) {
+    const normalized = normalizeProfileId(profileId) || DEFAULT_PROFILE_ID;
+    if (draftProfileSettingsById?.[normalized]) {
+      return draftProfileSettingsById[normalized];
+    }
+
+    return getLiveProfileSettings(normalized);
+  }
+
+  function getLiveProfileSettings(profileId) {
+    const normalized = normalizeProfileId(profileId) || DEFAULT_PROFILE_ID;
+    if (!profileSettingsById[normalized]) {
+      profileSettingsById[normalized] = createDefaultProfileSettings(normalized);
+    }
+
+    return profileSettingsById[normalized];
+  }
+
+  function formatWeight(value) {
+    return Number(value || 0).toFixed(2);
   }
 
   async function saveCachedAnalysis(entry) {
@@ -1902,18 +2163,17 @@
     }
 
     if (!jobText) {
-      const fallbackCandidates = Array.from(document.querySelectorAll("main, article, section, div"))
-        .map((element) => ({
-          text: cleanText(element.innerText || element.textContent || ""),
-          selector: describeElement(element)
-        }))
-        .map((entry) => normalizeFallbackEntry(entry, hostname))
-        .filter(Boolean)
-        .filter((entry) => entry.text.length >= 400)
-        .sort((left, right) => right.text.length - left.text.length);
-
+      const fallbackCandidates = collectFallbackCandidates(hostname);
       jobText = fallbackCandidates[0]?.text || "";
       extractionSource = fallbackCandidates[0]?.selector || extractionSource;
+    }
+
+    if (!jobText && hostname.includes("linkedin.com")) {
+      const bodyText = normalizeLinkedInJobText(cleanText(document.body?.innerText || "").slice(0, 90000));
+      if (bodyText.length >= 200) {
+        jobText = bodyText;
+        extractionSource = "linkedin-body-about-job-fallback";
+      }
     }
 
     const jobTitle = cleanText(
@@ -2003,6 +2263,129 @@
       return element.tagName.toLowerCase();
     }
 
+    function collectFallbackCandidates(currentHostname) {
+      const roots = [];
+      const addRoot = (element) => {
+        if (!element || roots.includes(element)) {
+          return;
+        }
+        roots.push(element);
+      };
+
+      if (currentHostname.includes("linkedin.com")) {
+        addRoot(document.querySelector(".jobs-search__job-details--container"));
+        addRoot(document.querySelector(".jobs-search__right-rail"));
+        addRoot(document.querySelector(".scaffold-layout__detail"));
+      } else if (currentHostname.includes("indeed.com")) {
+        addRoot(document.querySelector("#jobDescriptionText"));
+        addRoot(document.querySelector(".jobsearch-JobComponent-description"));
+        addRoot(document.querySelector("[data-testid='jobsearch-JobComponent-description']"));
+      }
+
+      addRoot(document.querySelector("main"));
+      addRoot(document.querySelector("article"));
+      addRoot(document.querySelector("section"));
+      if (roots.length === 0) {
+        addRoot(document.body);
+      }
+
+      const seen = new Set();
+      const candidates = [];
+
+      for (const root of roots) {
+        if (!root) {
+          continue;
+        }
+
+        const scopedNodes = [root, ...Array.from(root.querySelectorAll("article, section, div")).slice(0, MAX_FALLBACK_SCAN_NODES)];
+
+        for (const node of scopedNodes) {
+          if (!node || seen.has(node)) {
+            continue;
+          }
+
+          seen.add(node);
+
+          if (!isVisibleish(node)) {
+            continue;
+          }
+
+          const text = cleanText(node.innerText || node.textContent || "");
+          if (text.length < 280 || text.length > 52000) {
+            continue;
+          }
+
+          const normalized = normalizeFallbackEntry(
+            {
+              text,
+              selector: describeElement(node)
+            },
+            currentHostname
+          );
+
+          if (!normalized || normalized.text.length < 280) {
+            continue;
+          }
+
+          candidates.push({
+            ...normalized,
+            score: scoreFallbackCandidate(normalized.text, currentHostname)
+          });
+
+          if (candidates.length >= MAX_FALLBACK_SCAN_NODES) {
+            break;
+          }
+        }
+
+        if (candidates.length >= MAX_FALLBACK_SCAN_NODES) {
+          break;
+        }
+      }
+
+      return candidates
+        .sort((left, right) => right.score - left.score || left.text.length - right.text.length)
+        .map((entry) => ({
+          text: entry.text,
+          selector: entry.selector
+        }));
+    }
+
+    function scoreFallbackCandidate(text, currentHostname) {
+      const lower = text.toLowerCase();
+      let score = 0;
+
+      if (currentHostname.includes("linkedin.com")) {
+        if (lower.includes("about the job")) {
+          score += 10;
+        }
+        if (lower.includes("about the role")) {
+          score += 4;
+        }
+        if (lower.includes("responsibilities")) {
+          score += 4;
+        }
+        if (lower.includes("qualifications") || lower.includes("requirements")) {
+          score += 3;
+        }
+        if (lower.includes("people you can reach out to") || lower.includes("job search faster with premium")) {
+          score -= 8;
+        }
+      }
+
+      if (lower.includes("requirements")) {
+        score += 2;
+      }
+      if (lower.includes("experience")) {
+        score += 2;
+      }
+      if (lower.includes("preferred")) {
+        score += 1;
+      }
+
+      score += Math.min(Math.floor(text.length / 1800), 5);
+      return score;
+    }
+
     function findIndeedJobDescription() {
       const heading = findHeadingByText(["full job description"]);
       const descriptionNode = document.querySelector("#jobDescriptionText");
@@ -2058,32 +2441,79 @@
     }
 
     function findLinkedInJobDescriptionByContainerScan() {
-      const containers = Array.from(document.querySelectorAll("section, article, div"));
+      const roots = [
+        document.querySelector(".jobs-search__job-details--container"),
+        document.querySelector(".jobs-search__right-rail"),
+        document.querySelector(".scaffold-layout__detail"),
+        document.querySelector("main")
+      ].filter(Boolean);
+
+      if (roots.length === 0) {
+        roots.push(document.body);
+      }
+
+      const seen = new Set();
       const candidates = [];
+      let scanned = 0;
 
-      for (const container of containers) {
-        if (!isVisibleish(container)) {
-          continue;
-        }
+      for (const root of roots) {
+        const containers = [root, ...Array.from(root.querySelectorAll("section, article, div")).slice(0, MAX_LINKEDIN_CONTAINER_SCAN)];
 
-        const text = cleanText(container.innerText || container.textContent || "");
-        const lower = text.toLowerCase();
+        for (const container of containers) {
+          if (!container || seen.has(container)) {
+            continue;
+          }
+          seen.add(container);
 
-        if (!lower.includes("about the job")) {
-          continue;
-        }
+          scanned += 1;
+          if (scanned > MAX_LINKEDIN_CONTAINER_SCAN) {
+            break;
+          }
 
-        if (text.length < 250 || text.length > 32000) {
-          continue;
-        }
+          if (!isVisibleish(container)) {
+            continue;
+          }
 
-        const normalized = normalizeLinkedInJobText(text);
-        if (normalized.length >= 200) {
+          const text = cleanText(container.innerText || container.textContent || "");
+          if (text.length < 250 || text.length > 32000) {
+            continue;
+          }
+
+          const lower = text.toLowerCase();
+          if (!lower.includes("about the job")) {
+            continue;
+          }
+
+          const normalized = normalizeLinkedInJobText(text);
+          if (normalized.length < 200) {
+            continue;
+          }
+
+          const normalizedLower = normalized.toLowerCase();
+          let quality = 0;
+          if (normalizedLower.startsWith("about the job")) {
+            quality += 4;
+          }
+          if (normalizedLower.includes("about the role")) {
+            quality += 2;
+          }
+          if (normalizedLower.includes("responsibilities")) {
+            quality += 2;
+          }
+          if (normalizedLower.includes("qualifications") || normalizedLower.includes("requirements")) {
+            quality += 2;
+          }
+
           candidates.push({
             text: normalized,
             selector: describeElement(container),
-            length: normalized.length
+            length: normalized.length,
+            quality
           });
+        }
+
+        if (scanned > MAX_LINKEDIN_CONTAINER_SCAN) {
+          break;
         }
       }
 
@@ -2091,7 +2521,7 @@
         return null;
       }
 
-      candidates.sort((left, right) => left.length - right.length);
+      candidates.sort((left, right) => right.quality - left.quality || left.length - right.length);
       return {
         text: candidates[0].text,
         selector: candidates[0].selector
@@ -2103,29 +2533,68 @@
     }
 
     function findHeadingElementsByText(targets) {
-      const headings = Array.from(document.querySelectorAll("h1, h2, h3, h4, strong, span, div, p"));
+      const normalizedTargets = targets.map((target) => target.toLowerCase());
       const matches = [];
+      const seen = new Set();
 
-      for (const element of headings) {
-        const text = cleanText(element.innerText || element.textContent || "").toLowerCase();
-        if (!text || text.length > 220) {
-          continue;
-        }
+      const addMatchesFromList = (elements) => {
+        for (const element of elements) {
+          if (!element || seen.has(element)) {
+            continue;
+          }
+          seen.add(element);
 
-        if (!isVisibleish(element)) {
-          continue;
-        }
+          const text = cleanText(element.innerText || element.textContent || "").toLowerCase();
+          if (!text || text.length > 220) {
+            continue;
+          }
 
-        if (
-          targets.some((target) => {
+          if (!isVisibleish(element)) {
+            continue;
+          }
+
+          const hit = normalizedTargets.some((target) => {
             if (text === target || text.startsWith(`${target} `)) {
               return true;
             }
 
             return text.includes(target) && text.length <= 140;
+          });
+
+          if (hit) {
+            matches.push(element);
+          }
+        }
+      };
+
+      addMatchesFromList(Array.from(document.querySelectorAll("h1, h2, h3, h4, h5, h6, [role='heading'], strong")));
+      if (matches.length > 0) {
+        return matches;
+      }
+
+      const scopedRoots = [
+        document.querySelector(".jobs-search__job-details--container"),
+        document.querySelector(".jobs-search__right-rail"),
+        document.querySelector("#jobDescriptionText"),
+        document.querySelector("main")
+      ].filter(Boolean);
+
+      if (scopedRoots.length === 0) {
+        scopedRoots.push(document.body);
+      }
+
+      let scanned = 0;
+      for (const root of scopedRoots) {
+        const fallbackNodes = Array.from(root.querySelectorAll("div, p, span")).slice(0, MAX_HEADING_FALLBACK_NODES);
+        addMatchesFromList(
+          fallbackNodes.filter(() => {
+            scanned += 1;
+            return scanned <= MAX_HEADING_FALLBACK_NODES;
           })
-        ) {
-          matches.push(element);
+        );
+
+        if (scanned >= MAX_HEADING_FALLBACK_NODES) {
+          break;
         }
       }
 
@@ -2444,11 +2913,12 @@
   }
 
   function analyzeJobText(jobText) {
-    const normalizedText = normalizeText(jobText);
+    const normalizedText = normalizeText(jobText).slice(0, MAX_ANALYSIS_TEXT_LENGTH);
     const sentenceRecords = buildSentenceRecords(normalizedText);
     const results = [];
+    const activeKeywordGroups = getProfileDefinition(activeProfileId).keywordGroups;
 
-    for (const group of KEYWORD_GROUPS) {
+    for (const group of activeKeywordGroups) {
       for (const item of group.items) {
         const matches = collectMatches(item, sentenceRecords);
 
@@ -2458,7 +2928,7 @@
         }
 
         const rawScore = calculateScore(matches);
-        const score = applyColorWeight(rawScore, getColorGroup(item.name));
+        const score = applyColorWeight(rawScore, getColorGroup(item.name, activeProfileId));
 
         results.push({
           group: group.group,
@@ -2499,7 +2969,6 @@
 
   function collectMatches(item, sentenceRecords) {
     const matches = [];
-    const aliases = item.aliases;
 
     for (let index = 0; index < sentenceRecords.length; index += 1) {
       const sentenceRecord = sentenceRecords[index];
@@ -2543,8 +3012,17 @@
   }
 
   function containsAlias(sentence, alias) {
-    const escaped = alias.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const matcher = new RegExp(`(^|[^a-z0-9])${escaped}([^a-z0-9]|$)`, "i");
+    const cacheKey = String(alias || "").trim().toLowerCase();
+    if (!cacheKey) {
+      return false;
+    }
+
+    let matcher = aliasRegexCache.get(cacheKey);
+    if (!matcher) {
+      const escaped = cacheKey.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      matcher = new RegExp(`(^|[^a-z0-9])${escaped}([^a-z0-9]|$)`, "i");
+      aliasRegexCache.set(cacheKey, matcher);
+    }
 
     return matcher.test(sentence);
   }
@@ -2732,7 +3210,8 @@
   }
 
   function applyColorWeight(score, colorGroup) {
-    const weight = Number(colorWeights[colorGroup] || DEFAULT_COLOR_WEIGHTS[colorGroup] || 1);
+    const activeWeights = getLiveProfileSettings(activeProfileId).colorWeights || DEFAULT_COLOR_WEIGHTS;
+    const weight = Number(activeWeights[colorGroup] || DEFAULT_COLOR_WEIGHTS[colorGroup] || 1);
     return clamp(Math.round(score * weight), 0, 100);
   }
 
