@@ -141,7 +141,11 @@ button:hover {
   transform: translateX(24px);
 }
 
-.cache-section {
+.secondary-button {
+  background: #ffffff;
+}
+
+.profile-section {
   margin-top: 16px;
   border: 1px solid #dde3e8;
   border-radius: 10px;
@@ -149,160 +153,146 @@ button:hover {
   padding: 12px;
 }
 
-.memory-section {
-  margin-top: 16px;
-  border: 1px solid #dde3e8;
-  border-radius: 10px;
-  background: #ffffff;
-  padding: 12px;
-}
-
-.memory-header {
+.profile-header {
   display: flex;
   justify-content: space-between;
   gap: 12px;
   align-items: flex-start;
 }
 
-.memory-header h2 {
+.profile-header h2 {
   margin: 0;
   font-size: 15px;
 }
 
-.memory-actions {
+.profile-tabs {
+  margin-top: 12px;
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.profile-tab {
+  border: 1px solid #cbd5e1;
+  border-radius: 999px;
+  padding: 8px 12px;
+  background: #ffffff;
+  color: #0f172a;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.profile-tab--active {
+  background: #0f172a;
+  border-color: #0f172a;
+  color: #ffffff;
+}
+
+.corpus-section {
+  margin-top: 16px;
+  border: 1px solid #dde3e8;
+  border-radius: 10px;
+  background: #ffffff;
+  padding: 12px;
+}
+
+.corpus-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.corpus-header h2 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.corpus-header-actions {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
   justify-content: flex-end;
 }
 
-.memory-grid {
+.corpus-grid {
   margin-top: 12px;
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px 14px;
 }
 
-.memory-row {
+.corpus-row {
   display: flex;
   flex-direction: column;
   gap: 4px;
 }
 
-.memory-row span {
+.corpus-row span {
   color: #52606d;
   font-size: 12px;
 }
 
-.memory-row strong {
+.corpus-row strong {
   font-size: 13px;
   word-break: break-all;
 }
 
-.cache-header {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  align-items: flex-start;
-}
-
-.cache-header h2 {
-  margin: 0;
-  font-size: 15px;
-}
-
-.cache-subtle {
-  margin-top: 4px;
-}
-
-.cache-actions {
+.corpus-actions {
+  margin-top: 14px;
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
-  justify-content: flex-end;
 }
 
-.secondary-button {
+.danger-button {
+  border-color: #ef4444;
+  color: #b91c1c;
+  background: #fff5f5;
+}
+
+.danger-button:hover {
+  background: #ffe3e3;
+}
+
+.confirm-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  z-index: 1000;
+}
+
+.confirm-overlay[hidden] {
+  display: none !important;
+}
+
+.confirm-dialog {
+  width: 100%;
+  max-width: 420px;
+  border: 1px solid #dbe3ec;
+  border-radius: 12px;
   background: #ffffff;
+  padding: 14px;
+  box-shadow: 0 20px 50px rgba(15, 23, 42, 0.24);
 }
 
-.cache-empty {
-  margin-top: 12px;
-  border: 1px dashed #cbd5e1;
-  border-radius: 8px;
-  padding: 12px;
-  color: #64748b;
-  background: #f8fafc;
-}
-
-.cache-list {
-  margin-top: 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  max-height: 520px;
-  overflow: auto;
-}
-
-.cache-item {
-  border: 1px solid #e5e7eb;
-  border-radius: 10px;
-  padding: 12px;
-  background: #fafafa;
-}
-
-.cache-item-header {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  align-items: flex-start;
-}
-
-.cache-item-title {
+.confirm-dialog h3 {
   margin: 0;
-  font-size: 14px;
-  line-height: 1.3;
+  font-size: 16px;
 }
 
-.cache-item-score {
-  flex-shrink: 0;
-  font-weight: 700;
-  color: #111827;
-}
-
-.cache-meta {
-  margin-top: 6px;
-  color: #52606d;
-  font-size: 12px;
-}
-
-.cache-preview {
-  margin: 10px 0 0;
-  color: #334155;
-  font-size: 12px;
-  line-height: 1.45;
-}
-
-.cache-details {
-  margin-top: 10px;
-}
-
-.cache-details summary {
-  cursor: pointer;
-  color: #0f172a;
-  font-weight: 600;
-}
-
-.cache-raw {
+.confirm-dialog p {
   margin: 8px 0 0;
-  max-height: 220px;
-  overflow: auto;
-  white-space: pre-wrap;
-  word-break: break-word;
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
-  background: #ffffff;
-  padding: 10px;
-  font-size: 12px;
-  line-height: 1.45;
+  color: #475569;
+}
+
+.confirm-actions {
+  margin-top: 14px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
 }

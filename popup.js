@@ -1,22 +1,43 @@
 const launchButton = document.getElementById("launchButton");
 const statusElement = document.getElementById("status");
-const refreshCacheButton = document.getElementById("refreshCacheButton");
-const copyCacheButton = document.getElementById("copyCacheButton");
-const downloadCacheButton = document.getElementById("downloadCacheButton");
-const cacheListElement = document.getElementById("cacheList");
-const cacheEmptyStateElement = document.getElementById("cacheEmptyState");
 const autofillToggle = document.getElementById("autofillToggle");
-const refreshMemoryButton = document.getElementById("refreshMemoryButton");
-const copyMemoryButton = document.getElementById("copyMemoryButton");
-const memoryManualCountElement = document.getElementById("memoryManualCount");
-const memoryLastUpdatedElement = document.getElementById("memoryLastUpdated");
 
-let latestCacheEntries = [];
-let isAutofillEnabled = false;
-let latestManualEntriesByKey = {};
+const profileTabsElement = document.getElementById("profileTabs");
+const refreshProfileButton = document.getElementById("refreshProfileButton");
+const currentProfileLabelElement = document.getElementById("currentProfileLabel");
+const currentProfileCorpusCountElement = document.getElementById("currentProfileCorpusCount");
+const currentProfileFileNameElement = document.getElementById("currentProfileFileName");
+const currentProfileCacheCountElement = document.getElementById("currentProfileCacheCount");
+const downloadProfileButton = document.getElementById("downloadProfileButton");
+const clearProfileCacheButton = document.getElementById("clearProfileCacheButton");
+
+const confirmOverlay = document.getElementById("confirmOverlay");
+const confirmTitleElement = document.getElementById("confirmTitle");
+const confirmMessageElement = document.getElementById("confirmMessage");
+const confirmCancelButton = document.getElementById("confirmCancelButton");
+const confirmOkButton = document.getElementById("confirmOkButton");
 
 const SETTINGS_KEY = "formMemory.enabled";
-const MANUAL_ENTRIES_KEY = "formMemory.manualEntriesByKey";
+const ANALYZER_SETTINGS_KEY = "analyzerSettings";
+const JD_CORPUS_STORAGE_KEY = "jdCorpusByProfile";
+const ANALYSIS_CACHE_KEY = "analysisCacheByUrl";
+const LAST_ANALYSIS_KEY = "lastAnalysis";
+
+const PROFILE_ORDER = ["backend", "agenticsys", "appsec"];
+const PROFILE_LABELS = {
+  backend: "Backend",
+  agenticsys: "AgenticSys",
+  appsec: "AppSec"
+};
+const PROFILE_FILE_BY_ID = {
+  backend: "backend.txt",
+  agenticsys: "agenticsys.txt",
+  appsec: "appsec.txt"
+};
+
+let isAutofillEnabled = false;
+let selectedProfileId = "backend";
+let pendingConfirmResolver = null;
 
 initializePopup();
 
@@ -47,6 +68,8 @@ launchButton.addEventListener("click", async () => {
   launchButton.disabled = true;
 
   try {
+    await persistSelectedProfile(selectedProfileId);
+
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
 
     if (!tab?.id || !tab.url) {
@@ -70,69 +93,83 @@ launchButton.addEventListener("click", async () => {
   }
 });
 
-refreshCacheButton.addEventListener("click", async () => {
-  await loadRecentCacheEntries(true);
+refreshProfileButton.addEventListener("click", async () => {
+  await loadProfileState(true);
 });
 
-refreshMemoryButton.addEventListener("click", async () => {
-  await loadFormMemorySnapshot(true);
-});
-
-copyMemoryButton.addEventListener("click", async () => {
-  if (Object.keys(latestManualEntriesByKey).length === 0) {
-    setStatus("No form memory entries to copy.", true);
-    return;
-  }
-
-  try {
-    const payload = {
-      [MANUAL_ENTRIES_KEY]: latestManualEntriesByKey
-    };
-    await navigator.clipboard.writeText(JSON.stringify(payload, null, 2));
-    setStatus(`Copied ${Object.keys(latestManualEntriesByKey).length} form memory entries as JSON.`);
-  } catch (error) {
-    setStatus(error.message || "Unable to copy form memory JSON.", true);
-  }
-});
-
-copyCacheButton.addEventListener("click", async () => {
-  if (latestCacheEntries.length === 0) {
-    setStatus("No cached JD entries to copy.", true);
-    return;
-  }
-
-  try {
-    await navigator.clipboard.writeText(JSON.stringify(toExportPayload(latestCacheEntries), null, 2));
-    setStatus(`Copied ${latestCacheEntries.length} cached JD entries as JSON.`);
-  } catch (error) {
-    setStatus(error.message || "Unable to copy cached JD JSON.", true);
-  }
-});
-
-downloadCacheButton.addEventListener("click", () => {
-  if (latestCacheEntries.length === 0) {
-    setStatus("No cached JD entries to download.", true);
-    return;
-  }
-
-  const blob = new Blob([JSON.stringify(toExportPayload(latestCacheEntries), null, 2)], {
-    type: "application/json"
+downloadProfileButton.addEventListener("click", async () => {
+  const confirmed = await showConfirmDialog({
+    title: "Download Profile Cache File",
+    message: `Download cached JD corpus for ${PROFILE_LABELS[selectedProfileId]} to a local folder you choose?`,
+    confirmText: "Download",
+    danger: false
   });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-  link.href = url;
-  link.download = `jd-cache-latest-5-${timestamp}.json`;
-  link.click();
-  URL.revokeObjectURL(url);
-  setStatus(`Downloaded ${latestCacheEntries.length} cached JD entries as JSON.`);
+
+  if (!confirmed) {
+    return;
+  }
+
+  downloadProfileButton.disabled = true;
+  try {
+    await downloadCurrentProfileCorpus();
+  } catch (error) {
+    setStatus(error.message || "Unable to download profile cache file.", true);
+  } finally {
+    downloadProfileButton.disabled = false;
+  }
+});
+
+clearProfileCacheButton.addEventListener("click", async () => {
+  const confirmed = await showConfirmDialog({
+    title: "Delete Current Tab Analysis Cache",
+    message:
+      `Delete only analysis cache for ${PROFILE_LABELS[selectedProfileId]} tab?\n` +
+      "This will NOT delete analyzer settings, applied state, corpus files, or form memory.",
+    confirmText: "Delete",
+    danger: true
+  });
+
+  if (!confirmed) {
+    return;
+  }
+
+  clearProfileCacheButton.disabled = true;
+  try {
+    await clearCurrentProfileAnalysisCache();
+  } catch (error) {
+    setStatus(error.message || "Unable to delete current tab analysis cache.", true);
+  } finally {
+    clearProfileCacheButton.disabled = false;
+  }
+});
+
+confirmCancelButton.addEventListener("click", () => closeConfirmDialog(false));
+confirmOkButton.addEventListener("click", () => closeConfirmDialog(true));
+
+confirmOverlay.addEventListener("click", (event) => {
+  if (event.target === confirmOverlay) {
+    closeConfirmDialog(false);
+  }
+});
+
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && !confirmOverlay.hidden) {
+    closeConfirmDialog(false);
+  }
 });
 
 async function initializePopup() {
   try {
-    const autofillSetting = await chrome.storage.local.get({ [SETTINGS_KEY]: false });
-    isAutofillEnabled = Boolean(autofillSetting[SETTINGS_KEY]);
+    await migrateLegacyCorpusToJsonStructure();
+
+    const bootstrap = await chrome.storage.local.get({
+      [SETTINGS_KEY]: false,
+      [ANALYZER_SETTINGS_KEY]: null
+    });
+
+    isAutofillEnabled = Boolean(bootstrap[SETTINGS_KEY]);
     autofillToggle.checked = isAutofillEnabled;
+    selectedProfileId = normalizeProfileId(bootstrap[ANALYZER_SETTINGS_KEY]?.activeProfileId) || "backend";
 
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
 
@@ -155,8 +192,313 @@ async function initializePopup() {
     launchButton.disabled = true;
   }
 
-  await loadRecentCacheEntries();
-  await loadFormMemorySnapshot();
+  renderProfileTabs();
+  await loadProfileState();
+}
+
+async function loadProfileState(isManualRefresh = false) {
+  const stored = await chrome.storage.local.get({
+    [ANALYZER_SETTINGS_KEY]: null,
+    [JD_CORPUS_STORAGE_KEY]: {},
+    [ANALYSIS_CACHE_KEY]: {},
+    [LAST_ANALYSIS_KEY]: null
+  });
+
+  const analyzerSettings = stored[ANALYZER_SETTINGS_KEY];
+  const storageProfileId = normalizeProfileId(analyzerSettings?.activeProfileId);
+  if (storageProfileId && storageProfileId !== selectedProfileId) {
+    selectedProfileId = storageProfileId;
+    renderProfileTabs();
+  }
+
+  const corpusByProfile = stored[JD_CORPUS_STORAGE_KEY] || {};
+  const analysisCacheByUrl = stored[ANALYSIS_CACHE_KEY] || {};
+  const profileData = corpusByProfile[selectedProfileId] || {};
+  const corpusItems = normalizeCorpusItems(profileData.items || []);
+  const fileName = profileData.fileName || getProfileFileName(selectedProfileId);
+  const profileCacheCount = countAnalysisCacheForProfile(analysisCacheByUrl, selectedProfileId);
+
+  currentProfileLabelElement.textContent = PROFILE_LABELS[selectedProfileId];
+  currentProfileCorpusCountElement.textContent = `${corpusItems.length}`;
+  currentProfileFileNameElement.textContent = fileName;
+  currentProfileCacheCountElement.textContent = `${profileCacheCount}`;
+
+  if (isManualRefresh) {
+    setStatus(
+      `${PROFILE_LABELS[selectedProfileId]} refreshed. Corpus ${corpusItems.length}, analysis cache ${profileCacheCount}.`
+    );
+  }
+}
+
+function renderProfileTabs() {
+  profileTabsElement.replaceChildren();
+
+  for (const profileId of PROFILE_ORDER) {
+    const tab = document.createElement("button");
+    tab.type = "button";
+    tab.className = `profile-tab ${profileId === selectedProfileId ? "profile-tab--active" : ""}`;
+    tab.textContent = PROFILE_LABELS[profileId];
+    tab.addEventListener("click", async () => {
+      if (profileId === selectedProfileId) {
+        return;
+      }
+
+      selectedProfileId = profileId;
+      renderProfileTabs();
+      await persistSelectedProfile(profileId);
+      await loadProfileState();
+      setStatus(`Switched profile tab to ${PROFILE_LABELS[profileId]}.`);
+    });
+
+    profileTabsElement.appendChild(tab);
+  }
+}
+
+async function persistSelectedProfile(profileId) {
+  const normalized = normalizeProfileId(profileId);
+  if (!normalized) {
+    return;
+  }
+
+  const stored = await chrome.storage.local.get({ [ANALYZER_SETTINGS_KEY]: null });
+  const raw = stored[ANALYZER_SETTINGS_KEY];
+  const next = {
+    ...(raw && typeof raw === "object" ? raw : {}),
+    version: Number(raw?.version) || 2,
+    activeProfileId: normalized,
+    updatedAt: new Date().toISOString()
+  };
+
+  await chrome.storage.local.set({ [ANALYZER_SETTINGS_KEY]: next });
+}
+
+async function downloadCurrentProfileCorpus() {
+  const stored = await chrome.storage.local.get({ [JD_CORPUS_STORAGE_KEY]: {} });
+  const corpusByProfile = stored[JD_CORPUS_STORAGE_KEY] || {};
+  const profileData = corpusByProfile[selectedProfileId] || {};
+  const items = normalizeCorpusItems(profileData.items || []);
+  const fileName = profileData.fileName || getProfileFileName(selectedProfileId);
+  const fileText = buildCorpusFileText(items);
+
+  if (!fileText.trim()) {
+    throw new Error("Current tab has no cached corpus content to download.");
+  }
+
+  const response = await chrome.runtime.sendMessage({
+    action: "downloadProfileCorpusFile",
+    fileName,
+    fileText
+  });
+
+  if (!response?.ok) {
+    throw new Error(response?.error || "Download channel is not available. Please reload the extension.");
+  }
+
+  setStatus(`Download started: ${fileName}`);
+}
+
+async function clearCurrentProfileAnalysisCache() {
+  const stored = await chrome.storage.local.get({
+    [ANALYSIS_CACHE_KEY]: {},
+    [LAST_ANALYSIS_KEY]: null
+  });
+
+  const analysisCacheByUrl = stored[ANALYSIS_CACHE_KEY] || {};
+  const nextCacheByUrl = {};
+  let removed = 0;
+
+  for (const [url, entry] of Object.entries(analysisCacheByUrl)) {
+    if (resolveEntryProfileId(entry) === selectedProfileId) {
+      removed += 1;
+      continue;
+    }
+
+    nextCacheByUrl[url] = entry;
+  }
+
+  const lastAnalysis = stored[LAST_ANALYSIS_KEY];
+  const nextLastAnalysis =
+    lastAnalysis && resolveEntryProfileId(lastAnalysis) === selectedProfileId ? null : lastAnalysis || null;
+
+  await chrome.storage.local.set({
+    [ANALYSIS_CACHE_KEY]: nextCacheByUrl,
+    [LAST_ANALYSIS_KEY]: nextLastAnalysis
+  });
+
+  await loadProfileState();
+  setStatus(
+    removed > 0
+      ? `Deleted ${removed} analysis cache entries for ${PROFILE_LABELS[selectedProfileId]}.`
+      : `No analysis cache entries found for ${PROFILE_LABELS[selectedProfileId]}.`
+  );
+}
+
+function resolveEntryProfileId(entry) {
+  const explicit = normalizeProfileId(entry?.profileId);
+  if (explicit) {
+    return explicit;
+  }
+
+  return "backend";
+}
+
+function countAnalysisCacheForProfile(cacheByUrl, profileId) {
+  return Object.values(cacheByUrl || {}).filter((entry) => resolveEntryProfileId(entry) === profileId).length;
+}
+
+function getProfileFileName(profileId) {
+  return PROFILE_FILE_BY_ID[profileId] || `${profileId}.txt`;
+}
+
+async function migrateLegacyCorpusToJsonStructure() {
+  try {
+    const stored = await chrome.storage.local.get({
+      [JD_CORPUS_STORAGE_KEY]: {},
+      [ANALYSIS_CACHE_KEY]: {}
+    });
+    const corpusByProfile = stored[JD_CORPUS_STORAGE_KEY] || {};
+    const analysisCacheByUrl = stored[ANALYSIS_CACHE_KEY] || {};
+    const nextCorpusByProfile = { ...corpusByProfile };
+    let changed = false;
+
+    for (const [profileId, profileDataRaw] of Object.entries(corpusByProfile)) {
+      const normalizedProfileId = normalizeProfileId(profileId) || profileId;
+      const profileData = profileDataRaw && typeof profileDataRaw === "object" ? profileDataRaw : {};
+      const normalizedItems = normalizeCorpusItems(profileData.items || [], { analysisCacheByUrl });
+      const fileName = profileData.fileName || getProfileFileName(normalizeProfileId(profileId) || "backend");
+      const fileText = buildCorpusFileText(normalizedItems);
+      const isNormalized = isCorpusProfileDataNormalized(profileData, normalizedItems, fileText, fileName);
+
+      if (isNormalized && normalizedProfileId === profileId) {
+        continue;
+      }
+
+      if (normalizedProfileId !== profileId) {
+        delete nextCorpusByProfile[profileId];
+      }
+
+      nextCorpusByProfile[normalizedProfileId] = {
+        ...profileData,
+        fileName,
+        schemaVersion: 2,
+        updatedAt: new Date().toISOString(),
+        items: normalizedItems,
+        fileText
+      };
+      changed = true;
+    }
+
+    if (!changed) {
+      return;
+    }
+
+    await chrome.storage.local.set({ [JD_CORPUS_STORAGE_KEY]: nextCorpusByProfile });
+  } catch (_error) {
+    // Non-fatal for popup initialization.
+  }
+}
+
+function normalizeCorpusItems(items, options = {}) {
+  const list = Array.isArray(items) ? items : [];
+  const analysisCacheByUrl = options.analysisCacheByUrl || {};
+  const nextItems = [];
+  const seenKeys = new Set();
+
+  for (const item of list) {
+    const jd = normalizeCorpusJdText(item?.JD || item?.text || item?.jd || "");
+    if (!jd) {
+      continue;
+    }
+
+    let key = normalizeCorpusKey(item?.KEY || item?.key || "");
+    if (!key) {
+      key = buildCorpusEntryKey({
+        jobTitle: item?.jobTitle || item?.title || "",
+        companyName: item?.companyName || item?.company || "",
+        pageTitle: item?.jobTitle || item?.title || ""
+      });
+    }
+
+    if (!key) {
+      const sourceUrl = String(item?.url || "").trim();
+      const cacheEntry = sourceUrl ? analysisCacheByUrl[sourceUrl] : null;
+      key = buildCorpusEntryKey(cacheEntry?.extraction || {});
+    }
+
+    if (!key) {
+      key = `Legacy Entry ${nextItems.length + 1}`;
+    }
+
+    if (seenKeys.has(key)) {
+      continue;
+    }
+    seenKeys.add(key);
+
+    nextItems.push({
+      NO: nextItems.length + 1,
+      KEY: key,
+      JD: jd
+    });
+  }
+
+  return nextItems;
+}
+
+function normalizeCorpusJdText(value) {
+  return String(value || "")
+    .replace(/\r/g, "\n")
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join(" ")
+    .replace(/[ \t]+/g, " ")
+    .trim();
+}
+
+function normalizeCorpusKey(value) {
+  return String(value || "")
+    .replace(/[ \t]+/g, " ")
+    .trim();
+}
+
+function buildCorpusEntryKey(extraction) {
+  const title = normalizeCorpusKey(extraction?.jobTitle || extraction?.pageTitle || "");
+  const company = normalizeCorpusKey(extraction?.companyName || "");
+  return normalizeCorpusKey([title, company].filter(Boolean).join(" "));
+}
+
+function isCorpusProfileDataNormalized(profileData, normalizedItems, fileText, fileName) {
+  const existingItems = Array.isArray(profileData?.items) ? profileData.items : [];
+  if (existingItems.length !== normalizedItems.length) {
+    return false;
+  }
+
+  for (let index = 0; index < normalizedItems.length; index += 1) {
+    const left = normalizedItems[index];
+    const right = existingItems[index] || {};
+    if (Number(right.NO) !== Number(left.NO) || String(right.KEY || "") !== left.KEY || String(right.JD || "") !== left.JD) {
+      return false;
+    }
+  }
+
+  return (
+    Number(profileData?.schemaVersion) === 2 &&
+    String(profileData?.fileName || "") === String(fileName || "") &&
+    String(profileData?.fileText || "") === String(fileText || "")
+  );
+}
+
+function buildCorpusFileText(items) {
+  if (!Array.isArray(items) || items.length === 0) {
+    return "";
+  }
+
+  return JSON.stringify(normalizeCorpusItems(items), null, 2);
+}
+
+function normalizeProfileId(profileId) {
+  const normalized = String(profileId || "").trim().toLowerCase();
+  return PROFILE_ORDER.includes(normalized) ? normalized : "";
 }
 
 function isSupportedUrl(url) {
@@ -187,152 +529,36 @@ async function injectFormMemoryToActiveTab() {
   });
 }
 
+function showConfirmDialog({ title, message, confirmText = "Yes", danger = false }) {
+  if (pendingConfirmResolver) {
+    pendingConfirmResolver(false);
+    pendingConfirmResolver = null;
+  }
+
+  confirmTitleElement.textContent = title;
+  confirmMessageElement.textContent = message;
+  confirmOkButton.textContent = confirmText;
+  confirmOkButton.classList.toggle("danger-button", Boolean(danger));
+  confirmOkButton.classList.toggle("primary-button", !danger);
+  confirmOverlay.hidden = false;
+
+  return new Promise((resolve) => {
+    pendingConfirmResolver = resolve;
+  });
+}
+
+function closeConfirmDialog(result) {
+  if (confirmOverlay.hidden || !pendingConfirmResolver) {
+    return;
+  }
+
+  const resolve = pendingConfirmResolver;
+  pendingConfirmResolver = null;
+  confirmOverlay.hidden = true;
+  resolve(Boolean(result));
+}
+
 function setStatus(message, isError = false) {
   statusElement.textContent = message;
   statusElement.style.color = isError ? "#b91c1c" : "#1f2933";
-}
-
-async function loadRecentCacheEntries(isManualRefresh = false) {
-  try {
-    const stored = await chrome.storage.local.get({ analysisCacheByUrl: {} });
-    const entries = Object.values(stored.analysisCacheByUrl || {})
-      .sort((left, right) => {
-        const leftTime = new Date(left.extractedAt || 0).getTime();
-        const rightTime = new Date(right.extractedAt || 0).getTime();
-        return rightTime - leftTime;
-      })
-      .slice(0, 5);
-
-    latestCacheEntries = entries;
-    renderCacheEntries(entries);
-
-    if (isManualRefresh) {
-      setStatus(entries.length > 0 ? `Loaded ${entries.length} recent cached JD entries.` : "No cached JD entries yet.");
-    }
-  } catch (error) {
-    setStatus(error.message || "Unable to load cached JD entries.", true);
-  }
-}
-
-async function loadFormMemorySnapshot(isManualRefresh = false) {
-  try {
-    const stored = await chrome.storage.local.get({
-      [MANUAL_ENTRIES_KEY]: {}
-    });
-
-    const manualEntriesByKey = stored[MANUAL_ENTRIES_KEY] || {};
-    latestManualEntriesByKey = manualEntriesByKey;
-    const manualEntries = Object.values(manualEntriesByKey)
-      .filter(Boolean)
-      .sort((left, right) => {
-        const leftTime = new Date(left.updatedAt || 0).getTime();
-        const rightTime = new Date(right.updatedAt || 0).getTime();
-        return rightTime - leftTime;
-      });
-
-    memoryManualCountElement.textContent = `${manualEntries.length}`;
-    memoryLastUpdatedElement.textContent = formatDateTime(manualEntries[0]?.updatedAt || "");
-
-    if (isManualRefresh) {
-      setStatus(`Memory loaded: ${manualEntries.length} manual entries.`);
-    }
-  } catch (error) {
-    setStatus(error.message || "Unable to load form memory snapshot.", true);
-  }
-}
-
-function renderCacheEntries(entries) {
-  cacheListElement.replaceChildren();
-  cacheEmptyStateElement.hidden = entries.length > 0;
-
-  for (const entry of entries) {
-    const card = document.createElement("article");
-    card.className = "cache-item";
-
-    const header = document.createElement("div");
-    header.className = "cache-item-header";
-
-    const titleBlock = document.createElement("div");
-    const title = document.createElement("h3");
-    title.className = "cache-item-title";
-    title.textContent = entry.extraction?.jobTitle || entry.title || "Untitled job";
-
-    const meta = document.createElement("div");
-    meta.className = "cache-meta";
-    meta.textContent = [
-      entry.extraction?.companyName || "Unknown company",
-      entry.extraction?.hostname || "-",
-      formatDateTime(entry.extractedAt)
-    ].join(" | ");
-
-    titleBlock.append(title, meta);
-
-    const score = document.createElement("div");
-    score.className = "cache-item-score";
-    score.textContent = entry.analysis?.overallScore ? `${entry.analysis.overallScore}%` : "No score";
-
-    header.append(titleBlock, score);
-    card.appendChild(header);
-
-    const source = document.createElement("div");
-    source.className = "cache-meta";
-    source.textContent = `Source: ${entry.extraction?.extractionSource || "-"}`;
-    card.appendChild(source);
-
-    const preview = document.createElement("p");
-    preview.className = "cache-preview";
-    preview.textContent = truncate(entry.extraction?.jobText || "", 220);
-    card.appendChild(preview);
-
-    const details = document.createElement("details");
-    details.className = "cache-details";
-
-    const summary = document.createElement("summary");
-    summary.textContent = "Show Extracted JD";
-
-    const raw = document.createElement("pre");
-    raw.className = "cache-raw";
-    raw.textContent = entry.extraction?.jobText || "";
-
-    details.append(summary, raw);
-    card.appendChild(details);
-
-    cacheListElement.appendChild(card);
-  }
-}
-
-function toExportPayload(entries) {
-  return entries.map((entry) => ({
-    extractedAt: entry.extractedAt,
-    url: entry.extraction?.url || entry.url || "",
-    hostname: entry.extraction?.hostname || entry.hostname || "",
-    jobTitle: entry.extraction?.jobTitle || entry.title || "",
-    companyName: entry.extraction?.companyName || "",
-    extractionSource: entry.extraction?.extractionSource || "",
-    overallScore: entry.analysis?.overallScore || 0,
-    matchedKeywords: entry.analysis?.matchedKeywords || 0,
-    extractedJD: entry.extraction?.jobText || ""
-  }));
-}
-
-function formatDateTime(isoString) {
-  if (!isoString) {
-    return "-";
-  }
-
-  const parsed = new Date(isoString);
-
-  if (Number.isNaN(parsed.getTime())) {
-    return "-";
-  }
-
-  return parsed.toLocaleString();
-}
-
-function truncate(text, maxLength) {
-  if (!text || text.length <= maxLength) {
-    return text || "";
-  }
-
-  return `${text.slice(0, maxLength).trim()}...`;
 }

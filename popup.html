@@ -33,46 +33,62 @@
         </label>
       </section>
 
-      <section class="memory-section">
-        <div class="memory-header">
+      <section class="profile-section">
+        <div class="profile-header">
           <div>
-            <h2>Form Memory Snapshot</h2>
-            <p class="subtle">Quick check for manually saved field key-value entries</p>
-          </div>
-          <div class="memory-actions">
-            <button id="refreshMemoryButton" class="secondary-button">Refresh Memory</button>
-            <button id="copyMemoryButton" class="secondary-button">Copy JSON</button>
+            <h2>Analyzer Profile Tab</h2>
+            <p class="subtle">Switch Backend / AgenticSys / AppSec profile (same behavior as overlay settings)</p>
           </div>
         </div>
-        <div class="memory-grid">
-          <div class="memory-row">
-            <span>Saved Field Keys</span>
-            <strong id="memoryManualCount">0</strong>
-          </div>
-          <div class="memory-row">
-            <span>Last Updated</span>
-            <strong id="memoryLastUpdated">-</strong>
-          </div>
-        </div>
+        <div id="profileTabs" class="profile-tabs"></div>
       </section>
 
-      <section class="cache-section">
-        <div class="cache-header">
+      <section class="corpus-section">
+        <div class="corpus-header">
           <div>
-            <h2>Recent Cached JDs</h2>
-            <p class="subtle cache-subtle">Read the last 5 Extracted JD entries saved in local cache</p>
+            <h2>Profile Cache Actions</h2>
+            <p class="subtle">Manage local cached corpus for the current profile tab</p>
           </div>
-          <div class="cache-actions">
-            <button id="refreshCacheButton" class="secondary-button">Refresh</button>
-            <button id="copyCacheButton" class="secondary-button">Copy JSON</button>
-            <button id="downloadCacheButton" class="secondary-button">Download JSON</button>
+          <div class="corpus-header-actions">
+            <button id="refreshProfileButton" class="secondary-button">Refresh</button>
+          </div>
+        </div>
+        <div class="corpus-grid">
+          <div class="corpus-row">
+            <span>Current Tab</span>
+            <strong id="currentProfileLabel">-</strong>
+          </div>
+          <div class="corpus-row">
+            <span>Corpus Entries</span>
+            <strong id="currentProfileCorpusCount">0</strong>
+          </div>
+          <div class="corpus-row">
+            <span>Target File</span>
+            <strong id="currentProfileFileName">-</strong>
+          </div>
+          <div class="corpus-row">
+            <span>Cached Analysis URLs (Current Tab)</span>
+            <strong id="currentProfileCacheCount">0</strong>
           </div>
         </div>
 
-        <div id="cacheEmptyState" class="cache-empty" hidden>No cached JD entries yet.</div>
-        <div id="cacheList" class="cache-list"></div>
+        <div class="corpus-actions">
+          <button id="downloadProfileButton" class="secondary-button">Download Current Tab Cache File</button>
+          <button id="clearProfileCacheButton" class="danger-button">Delete Current Tab Analysis Cache</button>
+        </div>
       </section>
     </main>
+
+    <div id="confirmOverlay" class="confirm-overlay" hidden>
+      <div class="confirm-dialog">
+        <h3 id="confirmTitle">Confirm Action</h3>
+        <p id="confirmMessage">Are you sure?</p>
+        <div class="confirm-actions">
+          <button id="confirmCancelButton" class="secondary-button">No</button>
+          <button id="confirmOkButton" class="primary-button">Yes</button>
+        </div>
+      </div>
+    </div>
 
     <script type="module" src="./popup.js"></script>
   </body>

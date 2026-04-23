@@ -6,8 +6,12 @@
   "permissions": [
     "activeTab",
     "scripting",
-    "storage"
+    "storage",
+    "downloads"
   ],
+  "background": {
+    "service_worker": "background.js"
+  },
   "action": {
     "default_title": "JD Keyword Analyzer",
     "default_popup": "popup.html"

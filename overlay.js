@@ -255,6 +255,16 @@
   };
   const PROFILE_DEFINITIONS = buildProfileDefinitions();
   const SETTINGS_STORAGE_KEY = "analyzerSettings";
+  const APPLIED_STORAGE_KEY = "appliedByUrl";
+  const JD_CORPUS_STORAGE_KEY = "jdCorpusByProfile";
+  const PROFILE_FILE_BY_ID = {
+    backend: "backend.txt",
+    agenticsys: "agenticsys.txt",
+    appsec: "appsec.txt"
+  };
+  const FEATURE_FLAGS = {
+    enableProfileCacheWipeEntry: false
+  };
   const MAX_ANALYSIS_TEXT_LENGTH = 20000;
   const MAX_FALLBACK_SCAN_NODES = 140;
   const MAX_HEADING_FALLBACK_NODES = 220;
@@ -476,6 +486,22 @@
       .status {
         margin: 0;
         font-size: 13px;
+        flex: 1;
+        min-width: 0;
+      }
+
+      .status-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+      }
+
+      .status-profile {
+        font-size: 13px;
+        font-weight: 800;
+        color: #111827;
+        white-space: nowrap;
       }
 
       .summary-grid {
@@ -556,6 +582,10 @@
         gap: 4px;
       }
 
+      .summary-row--history {
+        grid-column: 1 / -1;
+      }
+
       .summary-row span {
         color: #64748b;
         font-size: 12px;
@@ -566,15 +596,59 @@
         word-break: break-word;
       }
 
+      .current-url-wrap {
+        position: relative;
+        min-width: 0;
+      }
+
+      .current-url-value {
+        display: block;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        word-break: normal;
+        cursor: pointer;
+      }
+
+      .copy-bubble {
+        position: absolute;
+        top: calc(100% + 6px);
+        right: 0;
+        z-index: 10;
+        border: 1px solid #cbd5e1;
+        border-radius: 999px;
+        padding: 4px 10px;
+        font-size: 12px;
+        font-weight: 700;
+        line-height: 1.1;
+        background: #0f172a;
+        color: #ffffff;
+      }
+
+      .copy-bubble:hover {
+        background: #1f2937;
+      }
+
+      .summary-history-actions {
+        margin-top: 2px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+        width: 100%;
+      }
+
       .summary-history-badge {
         display: inline-flex;
         align-items: center;
+        justify-content: center;
         width: fit-content;
         border-radius: 999px;
         padding: 4px 10px;
         font-size: 12px;
         font-weight: 700;
         border: 1px solid transparent;
+        min-height: 34px;
       }
 
       .summary-history-badge--seen {
@@ -587,6 +661,39 @@
         background: #eef2f7;
         color: #334155;
         border-color: #d8e0ea;
+      }
+
+      .history-action-button {
+        border: 1px solid #cbd5e1;
+        border-radius: 999px;
+        padding: 4px 10px;
+        font-size: 12px;
+        font-weight: 700;
+        line-height: 1.1;
+        background: #f8fafc;
+        color: #475569;
+        min-height: 34px;
+      }
+
+      .history-action-button:hover {
+        background: #f1f5f9;
+      }
+
+      .history-action-button:disabled {
+        cursor: default;
+        opacity: 1;
+      }
+
+      .history-action-button--applied-on {
+        background: #fff4e6;
+        border-color: #f59e0b;
+        color: #b45309;
+      }
+
+      .history-action-button--saved {
+        background: #e6f6ec;
+        border-color: #2f855a;
+        color: #1f6f43;
       }
 
       .results h2,
@@ -839,6 +946,12 @@
           flex-wrap: wrap;
           cursor: default;
         }
+
+        .status-row {
+          align-items: flex-start;
+          flex-direction: column;
+          gap: 6px;
+        }
       }
     </style>
     <div class="shell">
@@ -859,7 +972,10 @@
 
       <div class="body">
         <section class="status-block">
-          <p id="status" class="status">Reading the current page...</p>
+          <div class="status-row">
+            <p id="status" class="status">Reading the current page...</p>
+            <strong id="statusProfile" class="status-profile" hidden></strong>
+          </div>
         </section>
 
         <section id="summarySection" class="summary-card" hidden>
@@ -886,11 +1002,18 @@
             </div>
             <div class="summary-row">
               <span>Current URL</span>
-              <strong id="currentUrl">-</strong>
+              <div id="currentUrlWrap" class="current-url-wrap">
+                <strong id="currentUrl" class="current-url-value">-</strong>
+                <button id="currentUrlCopyBubble" class="copy-bubble" type="button" hidden>Copy</button>
+              </div>
             </div>
-            <div class="summary-row">
-              <span>History</span>
-              <strong id="historyStatus" class="summary-history-badge summary-history-badge--new">Checking...</strong>
+            <div class="summary-row summary-row--history">
+              <div class="summary-history-actions">
+                <strong id="historyStatus" class="summary-history-badge summary-history-badge--new">New(0)</strong>
+                <button id="appliedButton" class="history-action-button" type="button">Applied(0)</button>
+                <button id="saveJdButton" class="history-action-button" type="button">Save(0)</button>
+                <button id="downloadJdButton" class="history-action-button" type="button">Download</button>
+              </div>
             </div>
           </div>
         </section>
@@ -937,6 +1060,7 @@
   const closeButton = shadow.getElementById("closeButton");
   const dragHandle = shadow.getElementById("dragHandle");
   const statusElement = shadow.getElementById("status");
+  const statusProfileElement = shadow.getElementById("statusProfile");
   const bodyElement = shadow.querySelector(".body");
   const statusSection = shadow.querySelector(".status-block");
   const summarySection = shadow.getElementById("summarySection");
@@ -957,8 +1081,13 @@
   const overallScoreElement = shadow.getElementById("overallScore");
   const sourceLabelElement = shadow.getElementById("sourceLabel");
   const cachedAtElement = shadow.getElementById("cachedAt");
+  const currentUrlWrapElement = shadow.getElementById("currentUrlWrap");
   const currentUrlElement = shadow.getElementById("currentUrl");
+  const currentUrlCopyBubble = shadow.getElementById("currentUrlCopyBubble");
   const historyStatusElement = shadow.getElementById("historyStatus");
+  const appliedButton = shadow.getElementById("appliedButton");
+  const saveJdButton = shadow.getElementById("saveJdButton");
+  const downloadJdButton = shadow.getElementById("downloadJdButton");
 
   let isRawVisible = false;
   let isSettingsVisible = false;
@@ -972,6 +1101,13 @@
   let draftActiveProfileId = DEFAULT_PROFILE_ID;
   let hasPendingSettingsChanges = false;
   let latestExtraction = null;
+  let currentHistoryUrl = "";
+  let currentAppliedState = false;
+  let currentSeenTotal = 0;
+  let currentAppliedTotal = 0;
+  let currentSavedTotal = 0;
+  let currentJdKey = "";
+  let saveButtonStateToken = 0;
 
   host.addEventListener("jd-analyzer-focus", () => {
     host.style.zIndex = "2147483647";
@@ -1009,6 +1145,132 @@
     renderSettingsList();
   });
 
+  appliedButton.addEventListener("click", async () => {
+    if (!currentHistoryUrl) {
+      return;
+    }
+
+    const nextState = !currentAppliedState;
+    await setAppliedStateForUrl(currentHistoryUrl, nextState);
+    const profileId = normalizeProfileId(activeProfileId) || DEFAULT_PROFILE_ID;
+    const history = await detectAnalysisHistory(currentHistoryUrl, profileId);
+    applyHistoryIndicator(history, currentHistoryUrl);
+  });
+
+  saveJdButton.addEventListener("click", async () => {
+    const jdText = String(latestExtraction?.jobText || "").trim();
+    if (!jdText) {
+      setStatus("No live JD text available to save. Run Analyze JD on a page with visible JD content first.", true);
+      return;
+    }
+
+    const profileId = normalizeProfileId(activeProfileId) || DEFAULT_PROFILE_ID;
+    saveJdButton.disabled = true;
+    try {
+      const saved = await persistJdToCorpusFile(profileId, latestExtraction);
+      if (!saved) {
+        throw new Error("Unable to save JD.");
+      }
+
+      const profileLabel = PROFILE_LABELS[profileId] || profileId;
+      const fileName = getCorpusFileName(profileId);
+      setStatus(`Saved to local cache file ${fileName} (${profileLabel}).`);
+      const history = await detectAnalysisHistory(latestExtraction.url || window.location.href, profileId);
+      applyHistoryIndicator(history, latestExtraction.url || window.location.href);
+      applySavedIndicator(true, currentSavedTotal);
+    } catch (error) {
+      setStatus(error?.message || "Unable to save JD text.", true);
+    } finally {
+      if (!saveJdButton.classList.contains("history-action-button--saved")) {
+        saveJdButton.disabled = false;
+      }
+    }
+  });
+
+  downloadJdButton.addEventListener("click", async () => {
+    const profileId = normalizeProfileId(activeProfileId) || DEFAULT_PROFILE_ID;
+    downloadJdButton.disabled = true;
+
+    try {
+      const corpus = await getProfileCorpus(profileId);
+      if (!corpus.fileText) {
+        throw new Error("Current tab has no cached JD corpus to download yet.");
+      }
+
+      const response = await chrome.runtime.sendMessage({
+        action: "downloadProfileCorpusFile",
+        fileName: corpus.fileName,
+        fileText: corpus.fileText
+      });
+
+      if (!response?.ok) {
+        throw new Error(response?.error || "Unable to start download.");
+      }
+
+      setStatus(`Download started: ${corpus.fileName}`);
+    } catch (error) {
+      setStatus(error?.message || "Unable to download corpus file.", true);
+    } finally {
+      downloadJdButton.disabled = false;
+    }
+  });
+
+  currentUrlWrapElement.addEventListener("click", (event) => {
+    if (event.target === currentUrlCopyBubble) {
+      return;
+    }
+
+    currentUrlCopyBubble.hidden = false;
+    currentUrlCopyBubble.textContent = "Copy";
+  });
+
+  currentUrlCopyBubble.addEventListener("click", async (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+
+    const value = String(currentUrlElement.textContent || "").trim();
+    if (!value || value === "-") {
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(value);
+      currentUrlCopyBubble.textContent = "Copied";
+      window.setTimeout(() => {
+        currentUrlCopyBubble.hidden = true;
+      }, 900);
+    } catch (_error) {
+      currentUrlCopyBubble.textContent = "Failed";
+      window.setTimeout(() => {
+        currentUrlCopyBubble.hidden = true;
+      }, 900);
+    }
+  });
+
+  shadow.addEventListener("click", (event) => {
+    if (!currentUrlWrapElement.contains(event.target)) {
+      currentUrlCopyBubble.hidden = true;
+    }
+  });
+
+  if (FEATURE_FLAGS.enableProfileCacheWipeEntry) {
+    window.addEventListener("keydown", async (event) => {
+      if (!(event.altKey && event.shiftKey && event.key === "Backspace")) {
+        return;
+      }
+
+      event.preventDefault();
+      const wiped = await wipeCurrentProfileCachesIfEnabled();
+      if (!wiped) {
+        return;
+      }
+
+      applySavedIndicator(false);
+      const profileId = normalizeProfileId(activeProfileId) || DEFAULT_PROFILE_ID;
+      setStatus(`Current profile analysis cache wiped: ${PROFILE_LABELS[profileId] || profileId}`);
+    });
+  }
+
   toggleRawButton.addEventListener("click", () => {
     isRawVisible = !isRawVisible;
     rawSection.hidden = !isRawVisible;
@@ -1025,6 +1287,8 @@
   initializeOverlay();
 
   async function initializeOverlay() {
+    await pruneCachedJobTextFromStorage();
+    await migrateLegacyCorpusToJsonStructure();
     await loadAnalyzerSettings();
     renderSettingsTabs();
     renderSettingsList();
@@ -1045,11 +1309,13 @@
 
       const analysis = analyzeJobText(extraction.jobText);
       const meta = buildCacheEntryMeta(extraction);
-      const history = await detectAnalysisHistory(extraction, meta);
+      const profileId = normalizeProfileId(activeProfileId) || DEFAULT_PROFILE_ID;
+      const history = await detectAnalysisHistory(extraction.url, profileId);
       const cacheEntry = {
         url: extraction.url,
         hostname: extraction.hostname,
         title: extraction.pageTitle,
+        profileId,
         extractedAt: new Date().toISOString(),
         extraction,
         analysis,
@@ -1060,6 +1326,8 @@
 
       renderResult(cacheEntry, false);
       await saveCachedAnalysis(cacheEntry);
+      const updatedHistory = await detectAnalysisHistory(extraction.url, profileId);
+      applyHistoryIndicator(updatedHistory, extraction.url || window.location.href);
     } catch (error) {
       if (isExtensionContextInvalidated(error)) {
         setStatus("This floating window belongs to an older extension version. Close it and reopen the analyzer.", true);
@@ -1070,12 +1338,14 @@
 
       if (cached) {
         const extraction = cached.extraction || { url: cached.url || window.location.href, jobText: "" };
-        const history = await detectAnalysisHistory(extraction, cached.meta);
         const hasExtractionText = Boolean(extraction?.jobText);
         const needsRecompute = cached.settingsHash !== computeSettingsHash();
+        const profileId = normalizeProfileId(cached?.profileId || activeProfileId) || DEFAULT_PROFILE_ID;
+        const history = await detectAnalysisHistory(extraction.url || cached.url || window.location.href, profileId);
         if (hasExtractionText && needsRecompute) {
           const recalculated = {
             ...cached,
+            profileId,
             extractedAt: new Date().toISOString(),
             meta: buildCacheEntryMeta(extraction),
             analysis: analyzeJobText(extraction.jobText),
@@ -1084,8 +1354,10 @@
           };
           renderResult(recalculated, true);
           await saveCachedAnalysis(recalculated);
+          const updatedHistory = await detectAnalysisHistory(extraction.url || cached.url || window.location.href, profileId);
+          applyHistoryIndicator(updatedHistory, extraction.url || cached.url || window.location.href);
         } else {
-          renderResult({ ...cached, history }, true);
+          renderResult({ ...cached, profileId, history }, true);
         }
         setStatus(
           `Live extraction failed, showing cached analysis instead. ${error.message || ""}`.trim(),
@@ -1101,8 +1373,11 @@
 
   function renderResult(cacheEntry, fromCache) {
     const { extraction, analysis, extractedAt, history } = cacheEntry;
+    const displayProfileId = normalizeProfileId(cacheEntry?.profileId || activeProfileId) || DEFAULT_PROFILE_ID;
+    const displayProfileLabel = PROFILE_LABELS[displayProfileId] || displayProfileId;
     latestExtraction = extraction;
     hasAnalysisResult = true;
+    setStatusProfile(displayProfileLabel);
 
     setStatus(
       fromCache
@@ -1123,7 +1398,10 @@
     sourceLabelElement.textContent = extraction.extractionSource || extraction.hostname || "-";
     cachedAtElement.textContent = extractedAt ? formatDateTime(extractedAt) : "Not saved";
     currentUrlElement.textContent = extraction.url || window.location.href;
-    applyHistoryIndicator(history);
+    currentUrlElement.title = extraction.url || window.location.href;
+    currentUrlCopyBubble.hidden = true;
+    applyHistoryIndicator(history, extraction.url || window.location.href);
+    void refreshSavedIndicator(extraction);
 
     renderColorSummary(analysis.results);
     resultsList.replaceChildren();
@@ -1341,8 +1619,21 @@
     analyzeButton.disabled = isLoading;
     analyzeButton.textContent = isLoading ? "Analyzing..." : "Analyze JD";
     if (isLoading) {
+      setStatusProfile(PROFILE_LABELS[normalizeProfileId(activeProfileId) || DEFAULT_PROFILE_ID] || "");
       setStatus("Reading the current page and scoring keyword matches...");
     }
+  }
+
+  function setStatusProfile(label) {
+    const text = String(label || "").trim();
+    if (!text) {
+      statusProfileElement.hidden = true;
+      statusProfileElement.textContent = "";
+      return;
+    }
+
+    statusProfileElement.textContent = text;
+    statusProfileElement.hidden = false;
   }
 
   function setStatus(message, isError = false) {
@@ -1469,20 +1760,38 @@
     return rank[color] ?? 99;
   }
 
-  function applyHistoryIndicator(history) {
-    const matchedBy = Array.isArray(history?.matchedBy) ? history.matchedBy : [];
-    const seenBefore = Boolean(history?.seenBefore || matchedBy.length > 0);
+  function applyHistoryIndicator(history, url) {
+    const seenBefore = Boolean(history?.seenBefore);
+    const totalCachedUrls = Number(history?.totalCachedUrls) || 0;
+    const totalAppliedUrls = Number(history?.totalAppliedUrls) || 0;
+    const totalSavedJds = Number(history?.totalSavedJds) || 0;
+    const applied = Boolean(history?.applied);
+
+    currentHistoryUrl = String(url || history?.url || "");
+    currentAppliedState = applied;
+    currentSeenTotal = totalCachedUrls;
+    currentAppliedTotal = totalAppliedUrls;
+    currentSavedTotal = totalSavedJds;
+
     historyStatusElement.className = `summary-history-badge ${
       seenBefore ? "summary-history-badge--seen" : "summary-history-badge--new"
     }`;
+    historyStatusElement.textContent = `${seenBefore ? "Seen" : "New"}(${totalCachedUrls})`;
+    appliedButton.disabled = !currentHistoryUrl;
+    applyAppliedIndicator(currentAppliedState, totalAppliedUrls);
+    applySavedIndicator(saveJdButton.classList.contains("history-action-button--saved"), totalSavedJds);
+  }
 
-    if (!seenBefore) {
-      historyStatusElement.textContent = "New JD";
-      return;
-    }
+  function applyAppliedIndicator(applied, totalApplied = currentAppliedTotal) {
+    appliedButton.classList.toggle("history-action-button--applied-on", Boolean(applied));
+    appliedButton.textContent = `Applied(${Math.max(0, Number(totalApplied) || 0)})`;
+  }
 
-    historyStatusElement.textContent =
-      matchedBy.length > 0 ? `Seen before (${matchedBy.join(" + ")})` : "Seen before";
+  function applySavedIndicator(saved, totalSaved = currentSavedTotal) {
+    const isSaved = Boolean(saved);
+    saveJdButton.classList.toggle("history-action-button--saved", isSaved);
+    saveJdButton.disabled = isSaved;
+    saveJdButton.textContent = `Save(${Math.max(0, Number(totalSaved) || 0)})`;
   }
 
   function applySettingsVisibility() {
@@ -1545,18 +1854,16 @@
       const defaults = buildDefaultProfileSettingsById();
       const normalizedSettingsByProfile = cloneProfileSettingsById(defaults);
 
-      // Backward compatibility with old shape:
-      // { keywordColorByName, colorWeights }
-      if (raw.keywordColorByName || raw.colorWeights) {
+      const hasProfileShape = raw.settingsByProfile && typeof raw.settingsByProfile === "object";
+      if (hasProfileShape) {
+        const inputByProfile = raw.settingsByProfile || {};
+        for (const profileId of PROFILE_ORDER) {
+          normalizedSettingsByProfile[profileId] = normalizeSingleProfileSettings(profileId, inputByProfile[profileId]);
+        }
+      } else if (raw.keywordColorByName || raw.colorWeights) {
+        // Backward compatibility with old shape:
+        // { keywordColorByName, colorWeights }
         normalizedSettingsByProfile.backend = normalizeSingleProfileSettings("backend", raw);
-        profileSettingsById = normalizedSettingsByProfile;
-        activeProfileId = DEFAULT_PROFILE_ID;
-        return;
-      }
-
-      const inputByProfile = raw.settingsByProfile || {};
-      for (const profileId of PROFILE_ORDER) {
-        normalizedSettingsByProfile[profileId] = normalizeSingleProfileSettings(profileId, inputByProfile[profileId]);
       }
 
       profileSettingsById = normalizedSettingsByProfile;
@@ -1686,11 +1993,13 @@
     try {
       const analysis = analyzeJobText(latestExtraction.jobText);
       const meta = buildCacheEntryMeta(latestExtraction);
-      const history = await detectAnalysisHistory(latestExtraction, meta);
+      const profileId = normalizeProfileId(activeProfileId) || DEFAULT_PROFILE_ID;
+      const history = await detectAnalysisHistory(latestExtraction.url || window.location.href, profileId);
       const entry = {
         url: latestExtraction.url || window.location.href,
         hostname: latestExtraction.hostname || window.location.hostname,
         title: latestExtraction.pageTitle || document.title,
+        profileId,
         extractedAt: new Date().toISOString(),
         extraction: latestExtraction,
         analysis,
@@ -1702,6 +2011,8 @@
       renderResult(entry, false);
       setStatus(`Scores refreshed using ${PROFILE_LABELS[activeProfileId]} profile settings.`);
       await saveCachedAnalysis(entry);
+      const updatedHistory = await detectAnalysisHistory(latestExtraction.url || window.location.href, profileId);
+      applyHistoryIndicator(updatedHistory, latestExtraction.url || window.location.href);
     } catch (error) {
       if (isExtensionContextInvalidated(error)) {
         setStatus("This floating window belongs to an older extension version. Close and reopen it.", true);
@@ -1966,11 +2277,11 @@
     try {
       const stored = await chrome.storage.local.get({ analysisCacheByUrl: {} });
       const analysisCacheByUrl = stored.analysisCacheByUrl || {};
-      analysisCacheByUrl[entry.url] = entry;
+      analysisCacheByUrl[entry.url] = sanitizeCacheEntryForStorage(entry);
 
       await chrome.storage.local.set({
         analysisCacheByUrl,
-        lastAnalysis: entry
+        lastAnalysis: sanitizeCacheEntryForStorage(entry)
       });
     } catch (error) {
       if (!isExtensionContextInvalidated(error)) {
@@ -1992,55 +2303,408 @@
     }
   }
 
-  async function detectAnalysisHistory(extraction, currentMeta = null) {
+  async function pruneCachedJobTextFromStorage() {
     try {
-      const stored = await chrome.storage.local.get({ analysisCacheByUrl: {} });
-      const entries = Object.values(stored.analysisCacheByUrl || {}).filter(Boolean);
-      if (entries.length === 0) {
-        return { seenBefore: false, matchedBy: [] };
-      }
+      const stored = await chrome.storage.local.get({ analysisCacheByUrl: {}, lastAnalysis: null });
+      const cacheByUrl = stored.analysisCacheByUrl || {};
+      let changed = false;
+      const sanitizedCacheByUrl = {};
 
-      const currentUrl = extraction?.url || window.location.href;
-      const currentCanonicalUrl = currentMeta?.canonicalUrlKey || canonicalizeAnalysisUrl(currentUrl);
-      const currentTextHash = currentMeta?.jobTextHash || computeJobTextHash(extraction?.jobText || "");
-      let urlMatched = false;
-      let textMatched = false;
-
-      for (const entry of entries) {
-        const entryUrl = entry?.extraction?.url || entry?.url || "";
-        const entryCanonicalUrl = entry?.meta?.canonicalUrlKey || canonicalizeAnalysisUrl(entryUrl);
-        if (currentCanonicalUrl && entryCanonicalUrl && currentCanonicalUrl === entryCanonicalUrl) {
-          urlMatched = true;
-        }
-
-        const entryTextHash = entry?.meta?.jobTextHash || computeJobTextHash(entry?.extraction?.jobText || "");
-        if (currentTextHash && entryTextHash && currentTextHash === entryTextHash) {
-          textMatched = true;
-        }
-
-        if (urlMatched && textMatched) {
-          break;
+      for (const [url, entry] of Object.entries(cacheByUrl)) {
+        const sanitized = sanitizeCacheEntryForStorage(entry);
+        sanitizedCacheByUrl[url] = sanitized;
+        if (JSON.stringify(sanitized) !== JSON.stringify(entry)) {
+          changed = true;
         }
       }
 
-      const matchedBy = [];
-      if (urlMatched) {
-        matchedBy.push("URL");
+      const lastAnalysisSanitized = sanitizeCacheEntryForStorage(stored.lastAnalysis);
+      if (JSON.stringify(lastAnalysisSanitized) !== JSON.stringify(stored.lastAnalysis || null)) {
+        changed = true;
       }
-      if (textMatched) {
-        matchedBy.push("JD Text");
+
+      if (!changed) {
+        return;
       }
+
+      await chrome.storage.local.set({
+        analysisCacheByUrl: sanitizedCacheByUrl,
+        lastAnalysis: lastAnalysisSanitized
+      });
+    } catch (error) {
+      if (!isExtensionContextInvalidated(error)) {
+        throw error;
+      }
+    }
+  }
+
+  function sanitizeCacheEntryForStorage(entry) {
+    if (!entry || typeof entry !== "object") {
+      return entry || null;
+    }
+
+    const profileId = normalizeProfileId(entry.profileId) || DEFAULT_PROFILE_ID;
+    const extraction = { ...(entry.extraction || {}) };
+    const fullText = String(extraction.jobText || "");
+    if (fullText) {
+      extraction.jobTextSnippet = fullText.slice(0, 500);
+      extraction.jobText = "";
+      extraction.jobTextRemoved = true;
+    }
+
+    return {
+      ...entry,
+      profileId,
+      extraction
+    };
+  }
+
+  async function detectAnalysisHistory(currentUrl, profileId = activeProfileId) {
+    const normalizedUrl = String(currentUrl || window.location.href || "").trim();
+    const normalizedProfileId = normalizeProfileId(profileId) || DEFAULT_PROFILE_ID;
+
+    try {
+      const stored = await chrome.storage.local.get({
+        analysisCacheByUrl: {},
+        [APPLIED_STORAGE_KEY]: {},
+        [JD_CORPUS_STORAGE_KEY]: {}
+      });
+      const analysisCacheByUrl = stored.analysisCacheByUrl || {};
+      const appliedByUrl = stored[APPLIED_STORAGE_KEY] || {};
+      const corpusByProfile = stored[JD_CORPUS_STORAGE_KEY] || {};
+      const profileData = corpusByProfile[normalizedProfileId] || {};
+      const savedItems = normalizeCorpusItems(profileData.items || []);
+      const totalCachedUrls = Object.keys(analysisCacheByUrl).length;
+      const totalAppliedUrls = Object.keys(appliedByUrl).length;
+      const totalSavedJds = savedItems.length;
 
       return {
-        seenBefore: matchedBy.length > 0,
-        matchedBy
+        url: normalizedUrl,
+        seenBefore: Boolean(normalizedUrl && analysisCacheByUrl[normalizedUrl]),
+        totalCachedUrls,
+        totalAppliedUrls,
+        totalSavedJds,
+        applied: Boolean(normalizedUrl && appliedByUrl[normalizedUrl])
       };
     } catch (error) {
       if (isExtensionContextInvalidated(error)) {
-        return { seenBefore: false, matchedBy: [] };
+        return {
+          url: normalizedUrl,
+          seenBefore: false,
+          totalCachedUrls: 0,
+          totalAppliedUrls: 0,
+          totalSavedJds: 0,
+          applied: false
+        };
       }
       throw error;
     }
+  }
+
+  async function setAppliedStateForUrl(url, isApplied) {
+    const normalizedUrl = String(url || "").trim();
+    if (!normalizedUrl) {
+      return;
+    }
+
+    try {
+      const stored = await chrome.storage.local.get({ [APPLIED_STORAGE_KEY]: {} });
+      const appliedByUrl = stored[APPLIED_STORAGE_KEY] || {};
+
+      if (isApplied) {
+        appliedByUrl[normalizedUrl] = true;
+      } else {
+        delete appliedByUrl[normalizedUrl];
+      }
+
+      await chrome.storage.local.set({ [APPLIED_STORAGE_KEY]: appliedByUrl });
+    } catch (error) {
+      if (!isExtensionContextInvalidated(error)) {
+        throw error;
+      }
+    }
+  }
+
+  async function refreshSavedIndicator(extraction) {
+    currentJdKey = buildCorpusEntryKey(extraction);
+    const profileId = normalizeProfileId(activeProfileId) || DEFAULT_PROFILE_ID;
+    const token = Date.now();
+    saveButtonStateToken = token;
+
+    if (!currentJdKey) {
+      applySavedIndicator(false);
+      return;
+    }
+
+    try {
+      const stored = await chrome.storage.local.get({ [JD_CORPUS_STORAGE_KEY]: {} });
+      if (saveButtonStateToken !== token) {
+        return;
+      }
+
+      const corpusByProfile = stored[JD_CORPUS_STORAGE_KEY] || {};
+      const profileData = corpusByProfile[profileId] || {};
+      const items = normalizeCorpusItems(profileData.items || []);
+      const alreadySaved = items.some((item) => item.KEY === currentJdKey);
+
+      applySavedIndicator(alreadySaved);
+    } catch (error) {
+      if (isExtensionContextInvalidated(error)) {
+        return;
+      }
+      applySavedIndicator(false);
+    }
+  }
+
+  async function persistJdToCorpusFile(profileId, extraction) {
+    const normalizedProfileId = normalizeProfileId(profileId) || DEFAULT_PROFILE_ID;
+    const normalizedText = normalizeCorpusJdText(extraction?.jobText || "");
+    const corpusKey = buildCorpusEntryKey(extraction);
+
+    if (!normalizedText || !corpusKey) {
+      return false;
+    }
+
+    try {
+      const stored = await chrome.storage.local.get({ [JD_CORPUS_STORAGE_KEY]: {} });
+      const corpusByProfile = stored[JD_CORPUS_STORAGE_KEY] || {};
+      const profileData = corpusByProfile[normalizedProfileId] || {};
+      const items = normalizeCorpusItems(profileData.items || []);
+
+      const exists = items.some((item) => item.KEY === corpusKey);
+      const nextItems = normalizeCorpusItems(
+        exists ? items : [...items, { NO: items.length + 1, KEY: corpusKey, JD: normalizedText }]
+      );
+
+      const fileName = getCorpusFileName(normalizedProfileId);
+      const fileText = buildCorpusFileText(nextItems);
+      const unchanged =
+        isCorpusProfileDataNormalized(profileData, nextItems, fileText, fileName) &&
+        exists;
+
+      if (unchanged) {
+        return true;
+      }
+
+      corpusByProfile[normalizedProfileId] = {
+        ...(profileData && typeof profileData === "object" ? profileData : {}),
+        fileName,
+        schemaVersion: 2,
+        updatedAt: new Date().toISOString(),
+        items: nextItems,
+        fileText
+      };
+
+      await chrome.storage.local.set({ [JD_CORPUS_STORAGE_KEY]: corpusByProfile });
+      return true;
+    } catch (error) {
+      if (isExtensionContextInvalidated(error)) {
+        return false;
+      }
+
+      throw error;
+    }
+  }
+
+  async function getProfileCorpus(profileId) {
+    const normalizedProfileId = normalizeProfileId(profileId) || DEFAULT_PROFILE_ID;
+    const stored = await chrome.storage.local.get({ [JD_CORPUS_STORAGE_KEY]: {} });
+    const corpusByProfile = stored[JD_CORPUS_STORAGE_KEY] || {};
+    const profileData = corpusByProfile[normalizedProfileId] || {};
+    const items = normalizeCorpusItems(profileData.items || []);
+
+    return {
+      profileId: normalizedProfileId,
+      fileName: getCorpusFileName(normalizedProfileId),
+      fileText: buildCorpusFileText(items),
+      items
+    };
+  }
+
+  async function migrateLegacyCorpusToJsonStructure() {
+    try {
+      const stored = await chrome.storage.local.get({
+        [JD_CORPUS_STORAGE_KEY]: {},
+        analysisCacheByUrl: {}
+      });
+      const corpusByProfile = stored[JD_CORPUS_STORAGE_KEY] || {};
+      const analysisCacheByUrl = stored.analysisCacheByUrl || {};
+      const nextCorpusByProfile = { ...corpusByProfile };
+      let changed = false;
+
+      for (const [profileId, profileDataRaw] of Object.entries(corpusByProfile)) {
+        const normalizedProfileId = normalizeProfileId(profileId) || profileId;
+        const profileData = profileDataRaw && typeof profileDataRaw === "object" ? profileDataRaw : {};
+        const normalizedItems = normalizeCorpusItems(profileData.items || [], { analysisCacheByUrl });
+        const fileName = profileData.fileName || getCorpusFileName(normalizeProfileId(profileId) || DEFAULT_PROFILE_ID);
+        const fileText = buildCorpusFileText(normalizedItems);
+        const isNormalized = isCorpusProfileDataNormalized(profileData, normalizedItems, fileText, fileName);
+
+        if (isNormalized && normalizedProfileId === profileId) {
+          continue;
+        }
+
+        if (normalizedProfileId !== profileId) {
+          delete nextCorpusByProfile[profileId];
+        }
+
+        nextCorpusByProfile[normalizedProfileId] = {
+          ...profileData,
+          fileName,
+          schemaVersion: 2,
+          updatedAt: new Date().toISOString(),
+          items: normalizedItems,
+          fileText
+        };
+        changed = true;
+      }
+
+      if (!changed) {
+        return;
+      }
+
+      await chrome.storage.local.set({ [JD_CORPUS_STORAGE_KEY]: nextCorpusByProfile });
+    } catch (error) {
+      if (!isExtensionContextInvalidated(error)) {
+        throw error;
+      }
+    }
+  }
+
+  async function wipeCurrentProfileCachesIfEnabled() {
+    if (!FEATURE_FLAGS.enableProfileCacheWipeEntry) {
+      return false;
+    }
+
+    const profileId = normalizeProfileId(activeProfileId) || DEFAULT_PROFILE_ID;
+    await wipeProfileScopedCaches(profileId);
+    return true;
+  }
+
+  async function wipeProfileScopedCaches(profileId) {
+    const normalizedProfileId = normalizeProfileId(profileId) || DEFAULT_PROFILE_ID;
+    const stored = await chrome.storage.local.get({ analysisCacheByUrl: {}, lastAnalysis: null });
+    const cacheByUrl = stored.analysisCacheByUrl || {};
+    const nextCacheByUrl = {};
+
+    for (const [url, entry] of Object.entries(cacheByUrl)) {
+      const entryProfileId = normalizeProfileId(entry?.profileId) || DEFAULT_PROFILE_ID;
+      if (entryProfileId === normalizedProfileId) {
+        continue;
+      }
+      nextCacheByUrl[url] = entry;
+    }
+
+    const lastAnalysis = stored.lastAnalysis;
+    const lastAnalysisProfileId = normalizeProfileId(lastAnalysis?.profileId) || DEFAULT_PROFILE_ID;
+    const nextLastAnalysis = lastAnalysisProfileId === normalizedProfileId ? null : lastAnalysis || null;
+
+    await chrome.storage.local.set({
+      analysisCacheByUrl: nextCacheByUrl,
+      lastAnalysis: nextLastAnalysis
+    });
+  }
+
+  function getCorpusFileName(profileId) {
+    return PROFILE_FILE_BY_ID[profileId] || `${profileId}.txt`;
+  }
+
+  function normalizeCorpusJdText(value) {
+    return String(value || "")
+      .replace(/\r/g, "\n")
+      .split(/\n+/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .join(" ")
+      .replace(/[ \t]+/g, " ")
+      .trim();
+  }
+
+  function normalizeCorpusKey(value) {
+    return String(value || "")
+      .replace(/[ \t]+/g, " ")
+      .trim();
+  }
+
+  function buildCorpusEntryKey(extraction) {
+    const title = normalizeCorpusKey(extraction?.jobTitle || extraction?.pageTitle || document.title || "");
+    const company = normalizeCorpusKey(extraction?.companyName || "");
+    return normalizeCorpusKey([title, company].filter(Boolean).join(" "));
+  }
+
+  function normalizeCorpusItems(items, options = {}) {
+    const list = Array.isArray(items) ? items : [];
+    const analysisCacheByUrl = options.analysisCacheByUrl || {};
+    const nextItems = [];
+    const seenKeys = new Set();
+
+    for (const item of list) {
+      const jd = normalizeCorpusJdText(item?.JD || item?.text || item?.jd || "");
+      if (!jd) {
+        continue;
+      }
+
+      let key = normalizeCorpusKey(item?.KEY || item?.key || "");
+      if (!key) {
+        key = buildCorpusEntryKey({
+          jobTitle: item?.jobTitle || item?.title || "",
+          companyName: item?.companyName || item?.company || "",
+          pageTitle: item?.jobTitle || item?.title || ""
+        });
+      }
+
+      if (!key) {
+        const sourceUrl = String(item?.url || "").trim();
+        const cacheEntry = sourceUrl ? analysisCacheByUrl[sourceUrl] : null;
+        key = buildCorpusEntryKey(cacheEntry?.extraction || {});
+      }
+
+      if (!key) {
+        key = `Legacy Entry ${nextItems.length + 1}`;
+      }
+
+      if (seenKeys.has(key)) {
+        continue;
+      }
+      seenKeys.add(key);
+
+      nextItems.push({
+        NO: nextItems.length + 1,
+        KEY: key,
+        JD: jd
+      });
+    }
+
+    return nextItems;
+  }
+
+  function isCorpusProfileDataNormalized(profileData, normalizedItems, fileText, fileName) {
+    const existingItems = Array.isArray(profileData?.items) ? profileData.items : [];
+    if (existingItems.length !== normalizedItems.length) {
+      return false;
+    }
+
+    for (let index = 0; index < normalizedItems.length; index += 1) {
+      const left = normalizedItems[index];
+      const right = existingItems[index] || {};
+      if (Number(right.NO) !== Number(left.NO) || String(right.KEY || "") !== left.KEY || String(right.JD || "") !== left.JD) {
+        return false;
+      }
+    }
+
+    return (
+      Number(profileData?.schemaVersion) === 2 &&
+      String(profileData?.fileName || "") === String(fileName || "") &&
+      String(profileData?.fileText || "") === String(fileText || "")
+    );
+  }
+
+  function buildCorpusFileText(items) {
+    if (!Array.isArray(items) || items.length === 0) {
+      return "";
+    }
+
+    return JSON.stringify(normalizeCorpusItems(items), null, 2);
   }
 
   function buildCacheEntryMeta(extraction) {
