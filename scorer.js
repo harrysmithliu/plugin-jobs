@@ -1,4 +1,4 @@
-import { KEYWORD_GROUPS } from "./keywords.js";
+import { KEYWORD_GROUPS, PROFILE_KEYWORD_GROUPS } from "./keywords.js";
 
 const REQUIRED_HINTS = [
   "must",
@@ -63,12 +63,18 @@ const YEAR_PATTERNS = [
   /(\d+)\s*年(?:\+|以上)?/i
 ];
 
-export function analyzeJobText(jobText) {
+const aliasRegexCache = new Map();
+const SNIPPET_MAX_LENGTH = 180;
+const SNIPPET_LEFT_CONTEXT = 72;
+const SNIPPET_RIGHT_CONTEXT = 96;
+const SNIPPET_DELIMITERS = [".", ",", ";", ":", "!", "?", "。", "，", "；", "：", "！", "？", "\n"];
+
+export function analyzeJobText(jobText, keywordGroups = KEYWORD_GROUPS) {
   const normalizedText = normalizeText(jobText);
   const sentenceRecords = buildSentenceRecords(normalizedText);
   const results = [];
 
-  for (const group of KEYWORD_GROUPS) {
+  for (const group of keywordGroups) {
     for (const item of group.items) {
       const matches = collectMatches(item, sentenceRecords);
 
@@ -84,7 +90,7 @@ export function analyzeJobText(jobText) {
         name: item.name,
         score,
         signal: scoreToSignal(score),
-        snippets: unique(matches.map((match) => match.sentence)).slice(0, 3),
+        snippets: unique(matches.map((match) => match.snippet || match.sentence)).slice(0, 3),
         reasons: summarizeReasons(matches)
       });
     }
@@ -102,6 +108,12 @@ export function analyzeJobText(jobText) {
     results: results
       .sort((left, right) => right.score - left.score || left.name.localeCompare(right.name))
   };
+}
+
+export function analyzeJobTextByProfile(jobText, profileId = "backend") {
+  const normalizedProfileId = String(profileId || "").trim().toLowerCase();
+  const keywordGroups = PROFILE_KEYWORD_GROUPS[normalizedProfileId] || KEYWORD_GROUPS;
+  return analyzeJobText(jobText, keywordGroups);
 }
 
 function buildEmptyResult(group, name) {
@@ -139,6 +151,7 @@ function collectMatches(item, sentenceRecords) {
     matches.push({
       alias: matchedAlias,
       sentence,
+      snippet: buildMatchSnippet(item, sentence, matchedAlias),
       years: contextualYears,
       yearsSource: directYears !== null ? "direct" : contextualYears !== null ? "context" : null,
       isRequired,
@@ -161,8 +174,17 @@ function buildSentenceRecords(text) {
 }
 
 function containsAlias(sentence, alias) {
-  const escaped = alias.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const matcher = new RegExp(`(^|[^a-z0-9])${escaped}([^a-z0-9]|$)`, "i");
+  const cacheKey = String(alias || "").trim().toLowerCase();
+  if (!cacheKey) {
+    return false;
+  }
+
+  let matcher = aliasRegexCache.get(cacheKey);
+  if (!matcher) {
+    const escaped = cacheKey.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    matcher = new RegExp(`(^|[^a-z0-9])${escaped}([^a-z0-9]|$)`, "i");
+    aliasRegexCache.set(cacheKey, matcher);
+  }
 
   return matcher.test(sentence);
 }
@@ -177,6 +199,22 @@ function findMatchedAlias(item, sentence) {
     return "rest contextual match";
   }
 
+  if (item.name === "AI Agents" && containsAiAgentContext(sentence)) {
+    return "agent contextual match";
+  }
+
+  if (item.name === "LLM APIs" && containsLlmApiContext(sentence)) {
+    return "llm api contextual match";
+  }
+
+  if (item.name === "Vector DB" && containsVectorDbContext(sentence)) {
+    return "vector db contextual match";
+  }
+
+  if (item.name === "Evals" && containsEvalsContext(sentence)) {
+    return "eval contextual match";
+  }
+
   return null;
 }
 
@@ -184,6 +222,148 @@ function containsRestApiContext(sentence) {
   return /\brest(?:ful)?(?:\s*\/\s*soap)?(?:[-\s]+(?:based|style|driven))?[-\s]+(?:apis?|services?|endpoints?|framework|integration|integrations)\b/i.test(
     sentence
   );
+}
+
+function containsAiAgentContext(sentence) {
+  if (!/\bagents?\b/i.test(sentence)) {
+    return false;
+  }
+
+  return /\b(ai|llm|language model|agentic|orchestrat|reasoning|autonomous|tool(?:-|\s)?use|coding|copilot)\b/i.test(
+    sentence
+  );
+}
+
+function containsLlmApiContext(sentence) {
+  return /\b(openai|anthropic|claude|gemini|bedrock|vertex ai|azure openai|google gen ai)\b[\s\S]{0,40}\bapis?\b/i.test(sentence) ||
+    /\bapis?\b[\s\S]{0,40}\b(openai|anthropic|claude|gemini|bedrock|vertex ai|azure openai|google gen ai)\b/i.test(sentence);
+}
+
+function containsVectorDbContext(sentence) {
+  return /\b(pinecone|weaviate|milvus|faiss|pgvector|qdrant|chromadb?|vector index|vector indexes|vector indices|vector search)\b/i.test(
+    sentence
+  );
+}
+
+function containsEvalsContext(sentence) {
+  return /\b(model|llm|agent|rag|prompt)\s+evaluations?\b/i.test(sentence) ||
+    /\bevaluations?\b[\s\S]{0,24}\b(model|llm|agent|rag|prompt)\b/i.test(sentence) ||
+    /\bbenchmark(?:ing)?\b[\s\S]{0,24}\b(model|llm|agent|rag)\b/i.test(sentence);
+}
+
+function buildMatchSnippet(item, sentence, matchedAlias) {
+  const normalizedSentence = String(sentence || "").replace(/\s+/g, " ").trim();
+  if (!normalizedSentence) {
+    return "";
+  }
+
+  if (normalizedSentence.length <= SNIPPET_MAX_LENGTH) {
+    return normalizedSentence;
+  }
+
+  const anchor = findSnippetAnchor(normalizedSentence, item, matchedAlias);
+  if (!anchor) {
+    return `${normalizedSentence.slice(0, SNIPPET_MAX_LENGTH - 1).trim()}…`;
+  }
+
+  const lowerSentence = normalizedSentence.toLowerCase();
+  const lowerAnchor = anchor.toLowerCase();
+  const anchorIndex = lowerSentence.indexOf(lowerAnchor);
+
+  if (anchorIndex < 0) {
+    return `${normalizedSentence.slice(0, SNIPPET_MAX_LENGTH - 1).trim()}…`;
+  }
+
+  let start = Math.max(0, anchorIndex - SNIPPET_LEFT_CONTEXT);
+  let end = Math.min(normalizedSentence.length, anchorIndex + lowerAnchor.length + SNIPPET_RIGHT_CONTEXT);
+
+  const leftBoundary = findLeftBoundary(normalizedSentence, start, anchorIndex);
+  if (leftBoundary !== -1) {
+    start = leftBoundary + 1;
+  }
+
+  const rightBoundary = findRightBoundary(normalizedSentence, anchorIndex + lowerAnchor.length, end);
+  if (rightBoundary !== -1) {
+    end = rightBoundary;
+  }
+
+  let snippet = normalizedSentence.slice(start, end).trim();
+  if (snippet.length > SNIPPET_MAX_LENGTH) {
+    snippet = snippet.slice(0, SNIPPET_MAX_LENGTH - 1).trim();
+  }
+
+  if (start > 0) {
+    snippet = `…${snippet}`;
+  }
+
+  if (end < normalizedSentence.length) {
+    snippet = `${snippet}…`;
+  }
+
+  return snippet;
+}
+
+function findSnippetAnchor(sentence, item, matchedAlias) {
+  const lowerSentence = sentence.toLowerCase();
+  const candidates = [];
+
+  if (matchedAlias && !/contextual match/i.test(matchedAlias)) {
+    candidates.push(String(matchedAlias));
+  }
+
+  candidates.push(...getSnippetAnchorTerms(item.name));
+  const uniqueCandidates = unique(candidates.map((term) => String(term || "").trim()).filter(Boolean));
+
+  for (const candidate of uniqueCandidates) {
+    if (lowerSentence.includes(candidate.toLowerCase())) {
+      return candidate;
+    }
+  }
+
+  return null;
+}
+
+function getSnippetAnchorTerms(keywordName) {
+  switch (keywordName) {
+    case "AI Agents":
+      return ["ai agents", "agentic", "autonomous agents", "agent orchestration", "coding agents", "agent"];
+    case "LLM APIs":
+      return ["openai api", "claude api", "gemini api", "llm api", "model api", "apis"];
+    case "Vector DB":
+      return ["vector db", "vector database", "vector search", "pinecone", "weaviate", "milvus", "faiss", "pgvector", "qdrant", "chroma"];
+    case "Evals":
+      return ["llm eval", "model eval", "agent eval", "evaluation", "benchmark", "benchmarking"];
+    case "REST APIs":
+      return ["rest api", "restful api", "rest/soap", "rest services", "rest endpoints"];
+    default:
+      return [String(keywordName || "")];
+  }
+}
+
+function findLeftBoundary(text, fromIndex, toIndex) {
+  const start = Math.max(0, fromIndex);
+  const end = Math.min(text.length - 1, toIndex - 1);
+
+  for (let index = end; index >= start; index -= 1) {
+    if (SNIPPET_DELIMITERS.includes(text[index])) {
+      return index;
+    }
+  }
+
+  return -1;
+}
+
+function findRightBoundary(text, fromIndex, toIndex) {
+  const start = Math.max(0, fromIndex);
+  const end = Math.min(text.length - 1, toIndex);
+
+  for (let index = start; index <= end; index += 1) {
+    if (SNIPPET_DELIMITERS.includes(text[index])) {
+      return index;
+    }
+  }
+
+  return -1;
 }
 
 function collectContextRecords(sentenceRecords, index) {

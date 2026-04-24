@@ -117,3 +117,109 @@ export const KEYWORD_GROUPS = [
     ]
   }
 ];
+
+export const BACKEND_KEYWORD_GROUPS = KEYWORD_GROUPS.filter((group) => group.group !== "AI & LLM")
+  .map((group) => ({
+    ...group,
+    items: group.items.filter((item) => item.name !== "Vector DB")
+  }))
+  .filter((group) => group.items.length > 0);
+
+export const AGENTICSYS_KEYWORD_GROUPS = [
+  {
+    group: "AI Core",
+    items: [
+      { name: "LLM", aliases: ["llm", "llms", "large language model", "large language models"] },
+      { name: "GenAI", aliases: ["generative ai", "genai", "gen ai", "ai-native", "ai native"] },
+      { name: "Prompt Engineering", aliases: ["prompt engineering", "prompt design", "prompt tuning", "prompt optimization", "prompt writing"] },
+      { name: "RAG", aliases: ["rag", "retrieval augmented generation", "retrieval-augmented generation", "rag pipeline", "rag pipelines"] },
+      { name: "AI Agents", aliases: ["agentic", "ai agent", "ai agents", "agent workflows", "agent systems", "agentic systems", "agentic workflows", "autonomous agents"] },
+      { name: "Multi-Agent", aliases: ["multi-agent", "multi agent", "sub-agent", "sub agent", "supervisor/sub-agent", "agent orchestration"] },
+      { name: "MCP", aliases: ["mcp", "mcp server", "mcp servers", "model context protocol"] },
+      { name: "LLM APIs", aliases: ["llm api", "llm apis", "model api", "model apis", "foundation model api", "foundation model apis"] },
+      { name: "Embeddings", aliases: ["embedding", "embeddings"] },
+      { name: "Fine-Tuning", aliases: ["fine tune", "fine-tune", "fine tuning", "fine-tuning"] },
+      { name: "Evals", aliases: ["eval", "evals", "model eval", "model evals", "llm eval", "llm evals", "agent eval", "agent evals", "evaluation pipeline", "benchmark datasets", "regression testing for agents"] }
+    ]
+  },
+  {
+    group: "Frameworks",
+    items: [
+      { name: "LangChain", aliases: ["langchain"] },
+      { name: "LangGraph", aliases: ["langgraph"] },
+      { name: "LangSmith", aliases: ["langsmith"] },
+      { name: "LlamaIndex", aliases: ["llamaindex"] },
+      { name: "ADK", aliases: ["adk", "google adk", "agent development kit", "agent development kits"] }
+    ]
+  },
+  {
+    group: "Model Platforms",
+    items: [
+      { name: "OpenAI", aliases: ["openai", "gpt-4", "gpt 4", "gpt-5", "gpt 5"] },
+      { name: "Claude", aliases: ["claude", "anthropic"] },
+      { name: "Gemini", aliases: ["gemini"] },
+      { name: "Bedrock", aliases: ["bedrock", "aws bedrock", "amazon bedrock"] },
+      { name: "Vertex AI", aliases: ["vertex ai"] },
+      { name: "Azure OpenAI", aliases: ["azure openai"] }
+    ]
+  },
+  {
+    group: "Runtime & Infra",
+    items: [
+      { name: "Python", aliases: ["python"] },
+      { name: "TypeScript", aliases: ["typescript"] },
+      { name: "JavaScript", aliases: ["javascript"] },
+      { name: "Node.js", aliases: ["node.js", "nodejs", "node js"] },
+      { name: "Java", aliases: ["java"] },
+      { name: "Go", aliases: ["golang", "go language"] },
+      { name: "PyTorch", aliases: ["pytorch"] },
+      { name: "TensorFlow", aliases: ["tensorflow"] },
+      { name: "MLflow", aliases: ["mlflow"] },
+      { name: "Weights & Biases", aliases: ["weights & biases", "wandb", "w&b"] },
+      { name: "Arize", aliases: ["arize"] },
+      { name: "Observability", aliases: ["observability", "agent observability", "model monitoring", "llm observability", "tracing"] },
+      { name: "Docker", aliases: ["docker"] },
+      { name: "Kubernetes", aliases: ["kubernetes", "k8s"] },
+      { name: "Terraform", aliases: ["terraform"] },
+      { name: "AWS", aliases: ["aws", "amazon web services"] },
+      { name: "Azure", aliases: ["azure", "microsoft azure"] },
+      { name: "GCP", aliases: ["gcp", "google cloud", "google cloud platform"] },
+      { name: "OpenShift", aliases: ["openshift"] }
+    ]
+  },
+  {
+    group: "Data & Integration",
+    items: [
+      { name: "Vector DB", aliases: ["vector db", "vector database", "vector databases", "vectordb", "vector store", "vector stores"] },
+      { name: "Pinecone", aliases: ["pinecone"] },
+      { name: "Weaviate", aliases: ["weaviate"] },
+      { name: "Milvus", aliases: ["milvus"] },
+      { name: "FAISS", aliases: ["faiss"] },
+      { name: "pgvector", aliases: ["pgvector"] },
+      { name: "Qdrant", aliases: ["qdrant"] },
+      { name: "Chroma", aliases: ["chroma", "chromadb"] },
+      { name: "Neo4j", aliases: ["neo4j"] },
+      { name: "PostgreSQL", aliases: ["postgresql", "postgres", "postgre sql"] },
+      { name: "MongoDB", aliases: ["mongodb", "mongo db"] },
+      { name: "Redis", aliases: ["redis"] },
+      { name: "Elasticsearch", aliases: ["elasticsearch", "elastic search"] },
+      { name: "Kafka", aliases: ["kafka", "apache kafka"] },
+      { name: "SQS", aliases: ["sqs", "amazon sqs"] },
+      { name: "REST APIs", aliases: ["rest api", "restful api", "rest apis", "restful apis", "rest over http", "rest services", "rest endpoints"] },
+      { name: "gRPC", aliases: ["grpc"] },
+      { name: "GraphQL", aliases: ["graphql"] }
+    ]
+  }
+];
+
+export const AGENTICSYS_KEYWORD_COLOR_GROUPS = {
+  green: new Set(["Java", "Docker", "REST APIs", "PostgreSQL", "Redis"]),
+  yellow: new Set(["Python", "AWS", "Kafka", "MongoDB"]),
+  orange: new Set(["TypeScript"])
+};
+
+export const PROFILE_KEYWORD_GROUPS = {
+  backend: BACKEND_KEYWORD_GROUPS,
+  agenticsys: AGENTICSYS_KEYWORD_GROUPS,
+  appsec: []
+};

@@ -1,3 +1,10 @@
+import {
+  KEYWORD_GROUPS,
+  BACKEND_KEYWORD_GROUPS,
+  AGENTICSYS_KEYWORD_GROUPS,
+  AGENTICSYS_KEYWORD_COLOR_GROUPS
+} from "./keywords.js";
+
 const launchButton = document.getElementById("launchButton");
 const statusElement = document.getElementById("status");
 const autofillToggle = document.getElementById("autofillToggle");
@@ -79,6 +86,14 @@ launchButton.addEventListener("click", async () => {
     if (!isSupportedUrl(tab.url)) {
       throw new Error("Open an Indeed or LinkedIn job page first.");
     }
+
+    await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: (config) => {
+        globalThis.__JD_ANALYZER_KEYWORD_CONFIG__ = config;
+      },
+      args: [buildOverlayKeywordConfig()]
+    });
 
     await chrome.scripting.executeScript({
       target: { tabId: tab.id },
@@ -561,4 +576,17 @@ function closeConfirmDialog(result) {
 function setStatus(message, isError = false) {
   statusElement.textContent = message;
   statusElement.style.color = isError ? "#b91c1c" : "#1f2933";
+}
+
+function buildOverlayKeywordConfig() {
+  return {
+    keywordGroups: KEYWORD_GROUPS,
+    backendKeywordGroups: BACKEND_KEYWORD_GROUPS,
+    agenticKeywordGroups: AGENTICSYS_KEYWORD_GROUPS,
+    agenticKeywordColorGroups: {
+      green: Array.from(AGENTICSYS_KEYWORD_COLOR_GROUPS.green),
+      yellow: Array.from(AGENTICSYS_KEYWORD_COLOR_GROUPS.yellow),
+      orange: Array.from(AGENTICSYS_KEYWORD_COLOR_GROUPS.orange)
+    }
+  };
 }
