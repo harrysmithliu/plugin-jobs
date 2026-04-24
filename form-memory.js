@@ -53,18 +53,44 @@
   let cachedEntriesByKey = {};
   let scanQueued = false;
   let layoutQueued = false;
+  let domObserver = null;
+  let viewportObserversAttached = false;
+  let storageObserverAttached = false;
 
   init().catch(() => {
     // Keep content script silent on restricted pages.
   });
 
   async function init() {
-    injectStyles();
     await loadState();
-    scanAndBind();
-    observeDomChanges();
     observeStorageChanges();
+    if (isEnabled) {
+      startActiveMode();
+    }
+  }
+
+  function startActiveMode() {
+    injectStyles();
+    observeDomChanges();
     observeViewportChanges();
+    scanAndBind();
+  }
+
+  function stopActiveMode() {
+    if (domObserver) {
+      domObserver.disconnect();
+      domObserver = null;
+    }
+
+    if (viewportObserversAttached) {
+      window.removeEventListener("scroll", queueLayout, true);
+      window.removeEventListener("resize", queueLayout, true);
+      viewportObserversAttached = false;
+    }
+
+    scanQueued = false;
+    layoutQueued = false;
+    clearButtons();
   }
 
   function injectStyles() {
@@ -170,44 +196,67 @@
   }
 
   function observeDomChanges() {
-    const observer = new MutationObserver(() => {
+    if (domObserver || !isEnabled) {
+      return;
+    }
+
+    domObserver = new MutationObserver(() => {
       queueScan();
     });
 
-    observer.observe(document.documentElement, {
+    domObserver.observe(document.documentElement, {
       childList: true,
       subtree: true
     });
   }
 
   function observeStorageChanges() {
-    if (!chrome.storage?.onChanged) {
+    if (!chrome.storage?.onChanged || storageObserverAttached) {
       return;
     }
 
+    storageObserverAttached = true;
     chrome.storage.onChanged.addListener((changes, areaName) => {
       if (areaName !== "local") {
         return;
       }
 
       if (changes[SETTINGS_KEY]) {
+        const previousEnabled = isEnabled;
         isEnabled = Boolean(changes[SETTINGS_KEY].newValue);
+        if (isEnabled && !previousEnabled) {
+          startActiveMode();
+        } else if (!isEnabled && previousEnabled) {
+          stopActiveMode();
+        }
       }
 
       if (changes[MANUAL_ENTRIES_KEY]) {
-        cachedEntriesByKey = changes[MANUAL_ENTRIES_KEY].newValue || {};
+        const sanitized = sanitizeCachedEntries(changes[MANUAL_ENTRIES_KEY].newValue || {});
+        cachedEntriesByKey = sanitized.entriesByKey;
       }
 
-      queueScan();
+      if (isEnabled) {
+        queueScan();
+      }
     });
   }
 
   function observeViewportChanges() {
+    if (viewportObserversAttached || !isEnabled) {
+      return;
+    }
+
     window.addEventListener("scroll", queueLayout, true);
     window.addEventListener("resize", queueLayout, true);
+    viewportObserversAttached = true;
   }
 
   function queueScan() {
+    if (!isEnabled) {
+      return;
+    }
+
     if (scanQueued) {
       return;
     }
@@ -220,6 +269,10 @@
   }
 
   function queueLayout() {
+    if (!isEnabled) {
+      return;
+    }
+
     if (layoutQueued) {
       return;
     }
