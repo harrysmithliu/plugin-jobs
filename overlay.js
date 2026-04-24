@@ -396,8 +396,7 @@
 
       .status-block,
       .summary-card,
-      .results,
-      .raw-section {
+      .results {
         margin-bottom: 14px;
         border: 1px solid #dde3e8;
         border-radius: 12px;
@@ -618,10 +617,37 @@
         color: #1f6f43;
       }
 
-      .results h2,
-      .raw-section h2 {
+      .results h2 {
         margin: 0 0 12px;
         font-size: 15px;
+      }
+
+      .results-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        margin-bottom: 12px;
+      }
+
+      .results-header h2 {
+        margin: 0;
+      }
+
+      .results-copy-button {
+        border: 1px solid #cbd5e1;
+        border-radius: 999px;
+        padding: 4px 10px;
+        font-size: 12px;
+        font-weight: 700;
+        line-height: 1.1;
+        background: #f8fafc;
+        color: #475569;
+        min-height: 34px;
+      }
+
+      .results-copy-button:hover {
+        background: #f1f5f9;
       }
 
       .results-list {
@@ -726,17 +752,6 @@
         margin-top: 8px;
         color: #6b7280;
         font-size: 12px;
-      }
-
-      .raw-text {
-        margin: 0;
-        white-space: pre-wrap;
-        word-break: break-word;
-        max-height: 320px;
-        overflow: auto;
-        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-        font-size: 12px;
-        line-height: 1.45;
       }
 
       .settings-panel {
@@ -886,7 +901,6 @@
         <div class="header-actions">
           <button id="analyzeButton" class="primary-button">Analyze JD</button>
           <button id="settingsButton">Settings</button>
-          <button id="toggleRawButton" hidden>Show Raw Text</button>
           <button id="maximizeButton" class="icon-button" title="Toggle fullscreen">[]</button>
           <button id="closeButton" class="icon-button" title="Close">X</button>
         </div>
@@ -963,13 +977,11 @@
         </section>
 
         <section id="resultsSection" class="results" hidden>
-          <h2>Keyword Scores</h2>
+          <div class="results-header">
+            <h2>Keyword Scores</h2>
+            <button id="resultsCopyButton" class="results-copy-button" type="button">Copy JD</button>
+          </div>
           <div id="resultsList" class="results-list"></div>
-        </section>
-
-        <section id="rawSection" class="raw-section" hidden>
-          <h2>Extracted JD</h2>
-          <pre id="rawText" class="raw-text"></pre>
         </section>
       </div>
     </div>
@@ -977,7 +989,6 @@
 
   const analyzeButton = shadow.getElementById("analyzeButton");
   const settingsButton = shadow.getElementById("settingsButton");
-  const toggleRawButton = shadow.getElementById("toggleRawButton");
   const maximizeButton = shadow.getElementById("maximizeButton");
   const closeButton = shadow.getElementById("closeButton");
   const dragHandle = shadow.getElementById("dragHandle");
@@ -995,9 +1006,8 @@
   const resetSettingsButton = shadow.getElementById("resetSettingsButton");
   const closeSettingsButton = shadow.getElementById("closeSettingsButton");
   const resultsSection = shadow.getElementById("resultsSection");
-  const rawSection = shadow.getElementById("rawSection");
+  const resultsCopyButton = shadow.getElementById("resultsCopyButton");
   const resultsList = shadow.getElementById("resultsList");
-  const rawTextElement = shadow.getElementById("rawText");
   const jobTitleElement = shadow.getElementById("jobTitle");
   const companyNameElement = shadow.getElementById("companyName");
   const overallScoreElement = shadow.getElementById("overallScore");
@@ -1011,7 +1021,6 @@
   const saveJdButton = shadow.getElementById("saveJdButton");
   const downloadJdButton = shadow.getElementById("downloadJdButton");
 
-  let isRawVisible = false;
   let isSettingsVisible = false;
   let hasAnalysisResult = false;
   let isMaximized = false;
@@ -1030,6 +1039,8 @@
   let currentSavedTotal = 0;
   let currentJdKey = "";
   let saveButtonStateToken = 0;
+  let latestJdTextForCopy = "";
+  let latestJdTextUrl = "";
 
   host.addEventListener("jd-analyzer-focus", () => {
     host.style.zIndex = "2147483647";
@@ -1193,10 +1204,45 @@
     });
   }
 
-  toggleRawButton.addEventListener("click", () => {
-    isRawVisible = !isRawVisible;
-    rawSection.hidden = !isRawVisible;
-    toggleRawButton.textContent = isRawVisible ? "Hide Raw Text" : "Show Raw Text";
+  resultsCopyButton.addEventListener("click", async () => {
+    let jdText = String(latestJdTextForCopy || "").trim();
+
+    if (!jdText) {
+      try {
+        const extraction = await extractJobDescription();
+        const liveText = String(extraction?.jobText || "").trim();
+        if (liveText) {
+          jdText = liveText;
+          latestJdTextForCopy = liveText;
+          latestJdTextUrl = String(extraction?.url || window.location.href || "");
+          latestExtraction = {
+            ...(latestExtraction || {}),
+            ...extraction
+          };
+        }
+      } catch (_error) {
+        // Keep silent and fall through to "No text" feedback.
+      }
+    }
+
+    if (!jdText) {
+      resultsCopyButton.textContent = "No text";
+      window.setTimeout(() => {
+        resultsCopyButton.textContent = "Copy JD";
+      }, 900);
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(jdText);
+      resultsCopyButton.textContent = "Copied";
+    } catch (_error) {
+      resultsCopyButton.textContent = "Failed";
+    }
+
+    window.setTimeout(() => {
+      resultsCopyButton.textContent = "Copy JD";
+    }, 900);
   });
 
   maximizeButton.addEventListener("click", toggleMaximize);
@@ -1306,7 +1352,16 @@
     const { extraction, analysis, extractedAt, history } = cacheEntry;
     const displayProfileId = normalizeProfileId(cacheEntry?.profileId || activeProfileId) || DEFAULT_PROFILE_ID;
     const displayProfileLabel = PROFILE_LABELS[displayProfileId] || displayProfileId;
+    const extractionUrl = String(extraction?.url || window.location.href || "");
+    const extractionText = String(extraction?.jobText || "").trim();
     latestExtraction = extraction;
+    if (extractionText) {
+      latestJdTextForCopy = extractionText;
+      latestJdTextUrl = extractionUrl;
+    } else if (latestJdTextUrl !== extractionUrl) {
+      latestJdTextForCopy = "";
+      latestJdTextUrl = extractionUrl;
+    }
     hasAnalysisResult = true;
     setStatusProfile(displayProfileLabel);
 
@@ -1319,9 +1374,7 @@
     summarySection.hidden = false;
     colorSummarySection.hidden = false;
     resultsSection.hidden = false;
-    toggleRawButton.hidden = false;
-    rawTextElement.textContent = extraction.jobText;
-    rawSection.hidden = !isRawVisible;
+    resultsCopyButton.textContent = "Copy JD";
 
     jobTitleElement.textContent = extraction.jobTitle || extraction.pageTitle || "-";
     companyNameElement.textContent = extraction.companyName || "-";
@@ -1409,8 +1462,7 @@
     summarySection.hidden = true;
     colorSummarySection.hidden = true;
     resultsSection.hidden = true;
-    rawSection.hidden = true;
-    toggleRawButton.hidden = true;
+    resultsCopyButton.textContent = "Copy JD";
     colorSummaryList.replaceChildren();
     resultsList.replaceChildren();
     applySettingsVisibility();
@@ -1727,8 +1779,6 @@
       summarySection.hidden = true;
       colorSummarySection.hidden = true;
       resultsSection.hidden = true;
-      rawSection.hidden = true;
-      toggleRawButton.hidden = true;
       return;
     }
 
@@ -1736,8 +1786,6 @@
     summarySection.hidden = !hasAnalysisResult;
     colorSummarySection.hidden = !hasAnalysisResult;
     resultsSection.hidden = !hasAnalysisResult;
-    toggleRawButton.hidden = !hasAnalysisResult;
-    rawSection.hidden = !(hasAnalysisResult && isRawVisible);
   }
 
   function beginSettingsEdit() {
