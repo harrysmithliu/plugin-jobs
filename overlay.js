@@ -1223,6 +1223,18 @@
     hideResults();
 
     try {
+      const profileId = normalizeProfileId(activeProfileId) || DEFAULT_PROFILE_ID;
+      const currentUrl = window.location.href;
+      const cachedForCurrentUrl = await getCachedAnalysis(currentUrl);
+
+      if (cachedForCurrentUrl) {
+        const cachedUrl = cachedForCurrentUrl.url || currentUrl;
+        const cachedProfileId = normalizeProfileId(cachedForCurrentUrl?.profileId || profileId) || DEFAULT_PROFILE_ID;
+        const history = await detectAnalysisHistory(cachedUrl, cachedProfileId);
+        renderResult({ ...cachedForCurrentUrl, profileId: cachedProfileId, history }, true);
+        return;
+      }
+
       const extraction = await extractJobDescription();
 
       if (!extraction?.jobText) {
@@ -1231,7 +1243,6 @@
 
       const analysis = analyzeJobText(extraction.jobText);
       const meta = buildCacheEntryMeta(extraction);
-      const profileId = normalizeProfileId(activeProfileId) || DEFAULT_PROFILE_ID;
       const history = await detectAnalysisHistory(extraction.url, profileId);
       const cacheEntry = {
         url: extraction.url,
@@ -1248,8 +1259,6 @@
 
       renderResult(cacheEntry, false);
       await saveCachedAnalysis(cacheEntry);
-      const updatedHistory = await detectAnalysisHistory(extraction.url, profileId);
-      applyHistoryIndicator(updatedHistory, extraction.url || window.location.href);
     } catch (error) {
       if (isExtensionContextInvalidated(error)) {
         setStatus("This floating window belongs to an older extension version. Close it and reopen the analyzer.", true);
