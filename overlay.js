@@ -119,7 +119,7 @@
   const SETTINGS_STORAGE_KEY = "analyzerSettings";
   const APPLIED_STORAGE_KEY = "appliedByUrl";
   const APPLIED_STORAGE_SCHEMA_VERSION = 2;
-  const EXTRACTION_SCHEMA_VERSION = 2;
+  const EXTRACTION_SCHEMA_VERSION = 4;
   const JD_CORPUS_STORAGE_KEY = "jdCorpusByProfile";
   const PROFILE_FILE_BY_ID = {
     backend: "backend.txt",
@@ -2354,6 +2354,22 @@
     return normalizeAppliedJobKey(rawKey);
   }
 
+  function buildSeenJobKeyFromCacheEntry(entry) {
+    if (!entry || typeof entry !== "object") {
+      return "";
+    }
+
+    const extraction = entry?.extraction && typeof entry.extraction === "object"
+      ? entry.extraction
+      : {
+        jobTitle: entry?.jobTitle || entry?.title || "",
+        companyName: entry?.companyName || entry?.company || "",
+        pageTitle: entry?.pageTitle || entry?.title || ""
+      };
+
+    return buildAppliedJobKey(extraction);
+  }
+
   function createEmptyAppliedStorage() {
     return {
       schemaVersion: APPLIED_STORAGE_SCHEMA_VERSION,
@@ -2509,9 +2525,25 @@
       const profileData = corpusByProfile[normalizedProfileId] || {};
       const savedItems = normalizeCorpusItems(profileData.items || []);
       const appliedJobKey = buildAppliedJobKey(extraction);
+      const seenJobKey = buildAppliedJobKey(extraction);
       let appliedStorageChanged = normalizedApplied.changed;
       const appliedByUrl = Boolean(normalizedUrl && appliedStorage.urls[normalizedUrl]);
       const appliedByJobKey = Boolean(appliedJobKey && appliedStorage.jobKeys[appliedJobKey]);
+      const seenByUrl = Boolean(normalizedUrl && analysisCacheByUrl[normalizedUrl]);
+      let seenByJobKey = false;
+
+      if (!seenByUrl && seenJobKey) {
+        for (const [cachedUrl, cachedEntry] of Object.entries(analysisCacheByUrl)) {
+          if (normalizedUrl && cachedUrl === normalizedUrl) {
+            continue;
+          }
+
+          if (buildSeenJobKeyFromCacheEntry(cachedEntry) === seenJobKey) {
+            seenByJobKey = true;
+            break;
+          }
+        }
+      }
 
       if (appliedByUrl && appliedJobKey) {
         const now = new Date().toISOString();
@@ -2544,7 +2576,7 @@
 
       return {
         url: normalizedUrl,
-        seenBefore: Boolean(normalizedUrl && analysisCacheByUrl[normalizedUrl]),
+        seenBefore: seenByUrl || seenByJobKey,
         totalCachedUrls,
         totalAppliedUrls,
         totalSavedJds,
@@ -3077,7 +3109,6 @@
 
     const companyCandidates = [
       linkedInPageHeader.companyName,
-      companyFromDocument(pageTitle),
       ...textsFromSelector(".job-details-jobs-unified-top-card__company-name a"),
       ...textsFromSelector(".job-details-jobs-unified-top-card__primary-description-container a"),
       ...textsFromSelector(".job-details-jobs-unified-top-card__primary-description a"),
@@ -3089,7 +3120,8 @@
       textFromSelector("[data-company-name='true']"),
       textFromSelector(".jobsearch-CompanyInfoWithoutHeaderImage div"),
       cleanMetaContent('meta[name="twitter:title"]'),
-      ...textsFromSelector("a[href*='/company/']", 10)
+      ...textsFromSelector("a[href*='/company/']", 10),
+      companyFromDocument(pageTitle)
     ];
 
     const companyName = resolveCompanyName(
@@ -3216,9 +3248,16 @@
         if (currentHostname.includes("linkedin.com")) {
           candidate = cleanText(candidate.split("·")[0]);
           candidate = cleanText(candidate.replace(/\s+\|\s+linkedin.*$/i, ""));
+        } else if (currentHostname.includes("indeed.com")) {
+          candidate = cleanText(candidate.replace(/\s*-\s*job post\b.*$/i, ""));
+          candidate = cleanText(candidate.replace(/\s+\|\s+indeed.*$/i, ""));
         }
 
         if (candidate.length < 3 || candidate.length > 160) {
+          continue;
+        }
+
+        if (currentHostname.includes("indeed.com") && looksLikeIndeedSearchTitle(candidate)) {
           continue;
         }
 
@@ -3234,8 +3273,38 @@
         return "";
       }
 
+      if (currentHostname.includes("indeed.com")) {
+        return normalized[0];
+      }
+
       normalized.sort((left, right) => right.length - left.length);
       return normalized[0];
+    }
+
+    function looksLikeIndeedSearchTitle(candidate) {
+      const text = cleanText(candidate);
+      const lower = text.toLowerCase();
+      if (!lower) {
+        return false;
+      }
+
+      if (/\bjobs in\b/.test(lower)) {
+        return true;
+      }
+
+      if (/\bsearch\s+\d+\s+jobs?\b/.test(lower) || /\bjobs?\s+now available\b/.test(lower)) {
+        return true;
+      }
+
+      if (/^\$[\d,.k]+/i.test(lower) && /\bjobs?\b/.test(lower)) {
+        return true;
+      }
+
+      if (/\b\d{1,2}\s+[a-z]+\s+\d{4}\b/i.test(text) && /\bjobs?\b/.test(lower)) {
+        return true;
+      }
+
+      return false;
     }
 
     function resolveCompanyName(candidates, currentJobTitle, currentHostname, preferredCompany = "") {
@@ -3280,6 +3349,10 @@
         }
 
         if (candidate.length > 90) {
+          continue;
+        }
+
+        if (currentHostname.includes("indeed.com") && looksLikeIndeedSearchTitle(candidate)) {
           continue;
         }
 
