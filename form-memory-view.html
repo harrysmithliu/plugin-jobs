@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Form Memory View</title>
+    <link rel="stylesheet" href="./form-memory-view.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="header">
+        <h1>Form Memory Entries</h1>
+        <p class="subtle">Stored manual form key-value cache (label, value, updatedAt)</p>
+      </header>
+
+      <section class="toolbar">
+        <button id="refreshButton" class="secondary-button">Refresh</button>
+        <span id="countLabel" class="count">0 entries</span>
+      </section>
+
+      <section class="list-section">
+        <div id="emptyState" class="empty-state" hidden>No form memory entries found.</div>
+        <ul id="entriesList" class="entries-list"></ul>
+      </section>
+    </main>
+
+    <script type="module" src="./form-memory-view.js"></script>
+  </body>
+</html>

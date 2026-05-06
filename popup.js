@@ -8,6 +8,7 @@ import {
 const launchButton = document.getElementById("launchButton");
 const statusElement = document.getElementById("status");
 const autofillToggle = document.getElementById("autofillToggle");
+const viewFormMemoryButton = document.getElementById("viewFormMemoryButton");
 
 const profileTabsElement = document.getElementById("profileTabs");
 const refreshProfileButton = document.getElementById("refreshProfileButton");
@@ -25,6 +26,7 @@ const confirmCancelButton = document.getElementById("confirmCancelButton");
 const confirmOkButton = document.getElementById("confirmOkButton");
 
 const SETTINGS_KEY = "formMemory.enabled";
+const MANUAL_ENTRIES_KEY = "formMemory.manualEntriesByKey";
 const ANALYZER_SETTINGS_KEY = "analyzerSettings";
 const JD_CORPUS_STORAGE_KEY = "jdCorpusByProfile";
 const ANALYSIS_CACHE_KEY = "analysisCacheByUrl";
@@ -47,6 +49,33 @@ let selectedProfileId = "backend";
 let pendingConfirmResolver = null;
 
 initializePopup();
+
+viewFormMemoryButton.addEventListener("click", async () => {
+  try {
+    const viewUrl = chrome.runtime.getURL("form-memory-view.html");
+    const [activeTab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    const createOptions = {
+      url: viewUrl,
+      active: true
+    };
+
+    if (Number.isInteger(activeTab?.windowId)) {
+      createOptions.windowId = activeTab.windowId;
+    }
+
+    if (Number.isInteger(activeTab?.index)) {
+      createOptions.index = activeTab.index + 1;
+    }
+
+    await chrome.tabs.create(createOptions);
+  } catch (error) {
+    try {
+      window.open(chrome.runtime.getURL("form-memory-view.html"), "_blank", "noopener,noreferrer");
+    } catch (_fallbackError) {
+      setStatus(error.message || "Unable to open form memory view.", true);
+    }
+  }
+});
 
 autofillToggle.addEventListener("change", async () => {
   const nextValue = Boolean(autofillToggle.checked);
@@ -216,7 +245,8 @@ async function loadProfileState(isManualRefresh = false) {
     [ANALYZER_SETTINGS_KEY]: null,
     [JD_CORPUS_STORAGE_KEY]: {},
     [ANALYSIS_CACHE_KEY]: {},
-    [LAST_ANALYSIS_KEY]: null
+    [LAST_ANALYSIS_KEY]: null,
+    [MANUAL_ENTRIES_KEY]: {}
   });
 
   const analyzerSettings = stored[ANALYZER_SETTINGS_KEY];
@@ -232,6 +262,7 @@ async function loadProfileState(isManualRefresh = false) {
   const corpusItems = normalizeCorpusItems(profileData.items || []);
   const fileName = profileData.fileName || getProfileFileName(selectedProfileId);
   const profileCacheCount = countAnalysisCacheForProfile(analysisCacheByUrl, selectedProfileId);
+  const manualEntries = stored[MANUAL_ENTRIES_KEY] || {};
 
   currentProfileLabelElement.textContent = PROFILE_LABELS[selectedProfileId];
   currentProfileCorpusCountElement.textContent = `${corpusItems.length}`;
@@ -240,7 +271,7 @@ async function loadProfileState(isManualRefresh = false) {
 
   if (isManualRefresh) {
     setStatus(
-      `${PROFILE_LABELS[selectedProfileId]} refreshed. Corpus ${corpusItems.length}, analysis cache ${profileCacheCount}.`
+      `${PROFILE_LABELS[selectedProfileId]} refreshed. Corpus ${corpusItems.length}, analysis cache ${profileCacheCount}, form memory ${Object.keys(manualEntries).length}.`
     );
   }
 }

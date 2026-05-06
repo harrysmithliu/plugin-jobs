@@ -89,6 +89,18 @@ button:hover {
   gap: 12px;
 }
 
+.autofill-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.autofill-view-button {
+  padding: 8px 12px;
+  font-weight: 600;
+}
+
 .autofill-copy h2 {
   margin: 0;
   font-size: 15px;

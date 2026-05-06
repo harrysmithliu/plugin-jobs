@@ -1,0 +1,101 @@
+:root {
+  color-scheme: light;
+  font-family: "Segoe UI", Tahoma, sans-serif;
+  font-size: 14px;
+  line-height: 1.4;
+  color: #1f2933;
+  background: #f7f7f5;
+}
+
+body {
+  margin: 0;
+  background: #f7f7f5;
+}
+
+.page {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 20px;
+}
+
+.header h1 {
+  margin: 0;
+  font-size: 24px;
+}
+
+.subtle {
+  margin: 6px 0 0;
+  color: #6b7280;
+}
+
+.toolbar {
+  margin-top: 16px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.secondary-button {
+  border: 1px solid #cfd6dd;
+  border-radius: 8px;
+  padding: 8px 12px;
+  font: inherit;
+  background: #ffffff;
+  cursor: pointer;
+}
+
+.secondary-button:hover {
+  background: #f1f5f9;
+}
+
+.count {
+  color: #52606d;
+}
+
+.list-section {
+  margin-top: 16px;
+}
+
+.empty-state {
+  border: 1px solid #dde3e8;
+  border-radius: 10px;
+  background: #ffffff;
+  padding: 14px;
+  color: #52606d;
+}
+
+.entries-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.entry-card {
+  border: 1px solid #dde3e8;
+  border-radius: 10px;
+  background: #ffffff;
+  padding: 12px;
+}
+
+.entry-row {
+  display: grid;
+  grid-template-columns: 120px 1fr;
+  gap: 10px;
+}
+
+.entry-row + .entry-row {
+  margin-top: 8px;
+}
+
+.entry-key {
+  color: #52606d;
+  font-size: 12px;
+}
+
+.entry-value {
+  color: #111827;
+  word-break: break-word;
+}
