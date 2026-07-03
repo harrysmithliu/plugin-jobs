@@ -12,9 +12,9 @@ const viewFormMemoryButton = document.getElementById("viewFormMemoryButton");
 
 const profileTabsElement = document.getElementById("profileTabs");
 const refreshProfileButton = document.getElementById("refreshProfileButton");
-const currentProfileLabelElement = document.getElementById("currentProfileLabel");
-const currentProfileCorpusCountElement = document.getElementById("currentProfileCorpusCount");
-const currentProfileFileNameElement = document.getElementById("currentProfileFileName");
+const appliedAllCountElement = document.getElementById("appliedAllCount");
+const appliedWeekCountElement = document.getElementById("appliedWeekCount");
+const appliedTodayCountElement = document.getElementById("appliedTodayCount");
 const currentProfileCacheCountElement = document.getElementById("currentProfileCacheCount");
 const downloadProfileButton = document.getElementById("downloadProfileButton");
 const clearProfileCacheButton = document.getElementById("clearProfileCacheButton");
@@ -31,6 +31,7 @@ const ANALYZER_SETTINGS_KEY = "analyzerSettings";
 const JD_CORPUS_STORAGE_KEY = "jdCorpusByProfile";
 const ANALYSIS_CACHE_KEY = "analysisCacheByUrl";
 const LAST_ANALYSIS_KEY = "lastAnalysis";
+const APPLIED_STORAGE_KEY = "appliedByUrl";
 
 const PROFILE_ORDER = ["backend", "agenticsys", "appsec"];
 const PROFILE_LABELS = {
@@ -243,8 +244,8 @@ async function initializePopup() {
 async function loadProfileState(isManualRefresh = false) {
   const stored = await chrome.storage.local.get({
     [ANALYZER_SETTINGS_KEY]: null,
-    [JD_CORPUS_STORAGE_KEY]: {},
     [ANALYSIS_CACHE_KEY]: {},
+    [APPLIED_STORAGE_KEY]: {},
     [LAST_ANALYSIS_KEY]: null,
     [MANUAL_ENTRIES_KEY]: {}
   });
@@ -256,22 +257,19 @@ async function loadProfileState(isManualRefresh = false) {
     renderProfileTabs();
   }
 
-  const corpusByProfile = stored[JD_CORPUS_STORAGE_KEY] || {};
   const analysisCacheByUrl = stored[ANALYSIS_CACHE_KEY] || {};
-  const profileData = corpusByProfile[selectedProfileId] || {};
-  const corpusItems = normalizeCorpusItems(profileData.items || []);
-  const fileName = profileData.fileName || getProfileFileName(selectedProfileId);
+  const appliedStats = buildAppliedStats(stored[APPLIED_STORAGE_KEY] || {});
   const profileCacheCount = countAnalysisCacheForProfile(analysisCacheByUrl, selectedProfileId);
   const manualEntries = stored[MANUAL_ENTRIES_KEY] || {};
 
-  currentProfileLabelElement.textContent = PROFILE_LABELS[selectedProfileId];
-  currentProfileCorpusCountElement.textContent = `${corpusItems.length}`;
-  currentProfileFileNameElement.textContent = fileName;
+  appliedAllCountElement.textContent = `${appliedStats.total}`;
+  appliedWeekCountElement.textContent = `${appliedStats.week}`;
+  appliedTodayCountElement.textContent = `${appliedStats.today}`;
   currentProfileCacheCountElement.textContent = `${profileCacheCount}`;
 
   if (isManualRefresh) {
     setStatus(
-      `${PROFILE_LABELS[selectedProfileId]} refreshed. Corpus ${corpusItems.length}, analysis cache ${profileCacheCount}, form memory ${Object.keys(manualEntries).length}.`
+      `${PROFILE_LABELS[selectedProfileId]} refreshed. Applied ${appliedStats.total}, this week ${appliedStats.week}, today ${appliedStats.today}, analysis cache ${profileCacheCount}, form memory ${Object.keys(manualEntries).length}.`
     );
   }
 }
@@ -392,6 +390,104 @@ function countAnalysisCacheForProfile(cacheByUrl, profileId) {
   return Object.values(cacheByUrl || {}).filter((entry) => resolveEntryProfileId(entry) === profileId).length;
 }
 
+function buildAppliedStats(appliedStore) {
+  const normalized = normalizeAppliedStorage(appliedStore);
+  const appliedEntriesById = new Map();
+
+  const upsertEntry = (id, nextEntry) => {
+    if (!id) {
+      return;
+    }
+
+    const existing = appliedEntriesById.get(id);
+    if (!existing) {
+      appliedEntriesById.set(id, {
+        id,
+        key: normalizeAppliedJobKey(nextEntry?.key || ""),
+        url: normalizeAppliedUrl(nextEntry?.url || ""),
+        updatedAt: String(nextEntry?.updatedAt || "").trim()
+      });
+      return;
+    }
+
+    const existingTime = parseAppliedTimestamp(existing.updatedAt);
+    const nextTime = parseAppliedTimestamp(nextEntry?.updatedAt || "");
+    if (existingTime === null && nextTime !== null) {
+      existing.updatedAt = String(nextEntry?.updatedAt || "").trim();
+    } else if (existingTime !== null && nextTime !== null && nextTime > existingTime) {
+      existing.updatedAt = String(nextEntry?.updatedAt || "").trim();
+    }
+
+    if (!existing.key) {
+      existing.key = normalizeAppliedJobKey(nextEntry?.key || "");
+    }
+
+    if (!existing.url) {
+      existing.url = normalizeAppliedUrl(nextEntry?.url || "");
+    }
+  };
+
+  for (const [url, entry] of Object.entries(normalized.urls)) {
+    const key = normalizeAppliedJobKey(entry?.key || "");
+    const updatedAt = String(entry?.updatedAt || "").trim();
+
+    if (key) {
+      upsertEntry(`job:${key}`, { key, url, updatedAt });
+    } else {
+      upsertEntry(`url:${url}`, { url, updatedAt });
+    }
+  }
+
+  for (const [key, entry] of Object.entries(normalized.jobKeys)) {
+    const url = normalizeAppliedUrl(entry?.url || "");
+    const updatedAt = String(entry?.updatedAt || "").trim();
+    const urlOnlyId = url ? `url:${url}` : "";
+    const existingUrlOnlyEntry = urlOnlyId ? appliedEntriesById.get(urlOnlyId) : null;
+
+    if (existingUrlOnlyEntry && !existingUrlOnlyEntry.key) {
+      appliedEntriesById.delete(urlOnlyId);
+      upsertEntry(`job:${key}`, {
+        key,
+        url: existingUrlOnlyEntry.url || url,
+        updatedAt: mergeAppliedTimestamps(existingUrlOnlyEntry.updatedAt, updatedAt)
+      });
+      continue;
+    }
+
+    upsertEntry(`job:${key}`, { key, url, updatedAt });
+  }
+
+  const entries = Array.from(appliedEntriesById.values());
+  const todayStart = getStartOfTodayLocal();
+  const weekStart = getStartOfWeekLocal();
+  const todayStartTime = todayStart.getTime();
+  const weekStartTime = weekStart.getTime();
+
+  let today = 0;
+  let week = 0;
+
+  for (const entry of entries) {
+    const timestamp = parseAppliedTimestamp(entry.updatedAt);
+    if (timestamp === null) {
+      continue;
+    }
+
+    if (timestamp >= weekStartTime) {
+      week += 1;
+    }
+
+    if (timestamp >= todayStartTime) {
+      today += 1;
+    }
+  }
+
+  return {
+    total: entries.length,
+    week,
+    today
+  };
+}
+
 function getProfileFileName(profileId) {
   return PROFILE_FILE_BY_ID[profileId] || `${profileId}.txt`;
 }
@@ -505,6 +601,164 @@ function normalizeCorpusKey(value) {
   return String(value || "")
     .replace(/[ \t]+/g, " ")
     .trim();
+}
+
+function normalizeAppliedUrl(value) {
+  return String(value || "").trim();
+}
+
+function normalizeAppliedJobKey(value) {
+  return normalizeCorpusKey(value).toLowerCase();
+}
+
+function parseAppliedTimestamp(value) {
+  const raw = String(value || "").trim();
+  if (!raw) {
+    return null;
+  }
+
+  const timestamp = new Date(raw).getTime();
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+function mergeAppliedTimestamps(left, right) {
+  const leftTimestamp = parseAppliedTimestamp(left);
+  const rightTimestamp = parseAppliedTimestamp(right);
+
+  if (leftTimestamp === null) {
+    return String(right || left || "").trim();
+  }
+
+  if (rightTimestamp === null) {
+    return String(left || right || "").trim();
+  }
+
+  return rightTimestamp > leftTimestamp ? String(right || "").trim() : String(left || "").trim();
+}
+
+function getStartOfTodayLocal(referenceDate = new Date()) {
+  const date = new Date(referenceDate);
+  date.setHours(0, 0, 0, 0);
+  return date;
+}
+
+function getStartOfWeekLocal(referenceDate = new Date()) {
+  const date = getStartOfTodayLocal(referenceDate);
+  const day = date.getDay();
+  const offset = (day + 6) % 7;
+  date.setDate(date.getDate() - offset);
+  return date;
+}
+
+function normalizeAppliedStorage(rawStore) {
+  const normalized = {
+    urls: {},
+    jobKeys: {}
+  };
+
+  const addUrlEntry = (rawUrl, rawValue, forceLegacy = false) => {
+    const url = normalizeAppliedUrl(rawUrl);
+    if (!url) {
+      return;
+    }
+
+    const existing = normalized.urls[url] || {};
+    const next = { ...existing };
+
+    if (rawValue && typeof rawValue === "object" && !Array.isArray(rawValue)) {
+      const key = normalizeAppliedJobKey(rawValue.key || rawValue.jobKey || "");
+      const updatedAt = String(rawValue.updatedAt || "").trim();
+      if (key) {
+        next.key = key;
+      }
+      if (updatedAt) {
+        next.updatedAt = updatedAt;
+      }
+    } else if (typeof rawValue === "string") {
+      const key = normalizeAppliedJobKey(rawValue);
+      if (key) {
+        next.key = key;
+      }
+    } else if (!(forceLegacy || rawValue === true || rawValue === 1)) {
+      return;
+    }
+
+    normalized.urls[url] = next;
+  };
+
+  const addJobKeyEntry = (rawKey, rawValue) => {
+    const key = normalizeAppliedJobKey(rawKey);
+    if (!key) {
+      return;
+    }
+
+    const existing = normalized.jobKeys[key] || {};
+    const next = { ...existing };
+
+    if (rawValue && typeof rawValue === "object" && !Array.isArray(rawValue)) {
+      const url = normalizeAppliedUrl(rawValue.url || rawValue.sourceUrl || "");
+      const updatedAt = String(rawValue.updatedAt || "").trim();
+      if (url) {
+        next.url = url;
+      }
+      if (updatedAt) {
+        next.updatedAt = updatedAt;
+      }
+    } else if (typeof rawValue === "string") {
+      const url = normalizeAppliedUrl(rawValue);
+      if (url) {
+        next.url = url;
+      }
+    }
+
+    normalized.jobKeys[key] = next;
+  };
+
+  if (rawStore && typeof rawStore === "object") {
+    const hasStructuredShape = Boolean(rawStore.urls || rawStore.jobKeys || rawStore.schemaVersion);
+
+    if (hasStructuredShape) {
+      const urlMap = rawStore.urls && typeof rawStore.urls === "object" ? rawStore.urls : {};
+      const keyMap = rawStore.jobKeys && typeof rawStore.jobKeys === "object" ? rawStore.jobKeys : {};
+
+      for (const [url, value] of Object.entries(urlMap)) {
+        addUrlEntry(url, value);
+      }
+
+      for (const [key, value] of Object.entries(keyMap)) {
+        addJobKeyEntry(key, value);
+      }
+
+      for (const [key, value] of Object.entries(rawStore)) {
+        if (key === "schemaVersion" || key === "urls" || key === "jobKeys") {
+          continue;
+        }
+        addUrlEntry(key, value, true);
+      }
+    } else {
+      for (const [url, value] of Object.entries(rawStore)) {
+        addUrlEntry(url, value, true);
+      }
+    }
+  }
+
+  for (const [url, entry] of Object.entries(normalized.urls)) {
+    const key = normalizeAppliedJobKey(entry?.key || "");
+    if (!key) {
+      continue;
+    }
+
+    if (!normalized.jobKeys[key]) {
+      normalized.jobKeys[key] = { url, updatedAt: entry.updatedAt || "" };
+    } else if (!normalizeAppliedUrl(normalized.jobKeys[key].url || "")) {
+      normalized.jobKeys[key].url = url;
+      if (entry.updatedAt && !normalized.jobKeys[key].updatedAt) {
+        normalized.jobKeys[key].updatedAt = entry.updatedAt;
+      }
+    }
+  }
+
+  return normalized;
 }
 
 function buildCorpusEntryKey(extraction) {

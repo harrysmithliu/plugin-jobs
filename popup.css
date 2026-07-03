@@ -246,7 +246,9 @@ button:hover {
 }
 
 .corpus-row strong {
-  font-size: 13px;
+  font-size: 18px;
+  font-weight: 800;
+  line-height: 1.1;
   word-break: break-all;
 }
 
